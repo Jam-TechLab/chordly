@@ -17,7 +17,11 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // Bright, rich Piano PolySynth
+    // Mobile Web Audio Buffer Expansion: Expands hardware audio buffer to eliminate smartphone crackling
+    Tone.getContext().latencyHint = 'playback';
+    Tone.getContext().lookAhead = 0.1;
+
+    // Bright, rich Piano PolySynth (Triangle wave)
     this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: {
@@ -30,7 +34,7 @@ class AudioManager {
     this.synth.volume.value = -8;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized');
+    console.log('[AudioManager] Initialized with mobile playback buffer');
   }
 
   /** Play a chord (array of MIDI note numbers) */
