@@ -17,28 +17,31 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // Piano-like PolySynth
+    // Master Limiter to prevent any digital clipping / crackling on mobile speakers
+    this.limiter = new Tone.Limiter(-2).toDestination();
+
+    // Piano-like PolySynth with smooth attack & warm tone
     this.synth = new Tone.PolySynth(Tone.Synth, {
-      oscillator: { type: 'triangle8' },
+      oscillator: { type: 'triangle' },
       envelope: {
-        attack: 0.01,
-        decay: 0.4,
-        sustain: 0.3,
-        release: 1.2
+        attack: 0.03,
+        decay: 0.5,
+        sustain: 0.4,
+        release: 1.0
       }
-    }).toDestination();
-    this.synth.volume.value = -8;
+    }).connect(this.limiter);
+    this.synth.volume.value = -12;
 
     // Click synth for metronome
     this.clickSynth = new Tone.MembraneSynth({
       pitchDecay: 0.008,
       octaves: 4,
-      envelope: { attack: 0.001, decay: 0.15, sustain: 0, release: 0.05 }
-    }).toDestination();
-    this.clickSynth.volume.value = -15;
+      envelope: { attack: 0.005, decay: 0.12, sustain: 0, release: 0.05 }
+    }).connect(this.limiter);
+    this.clickSynth.volume.value = -18;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized');
+    console.log('[AudioManager] Initialized with master limiter');
   }
 
   /** Play a chord (array of MIDI note numbers) */
@@ -52,11 +55,10 @@ class AudioManager {
   playChordPreview(midiNotes) {
     if (!this.isInitialized || !midiNotes.length) return;
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
-    // Short, quiet preview
     const prevVol = this.synth.volume.value;
-    this.synth.volume.value = -16;
-    this.synth.triggerAttackRelease(freqs, 0.25);
-    setTimeout(() => { this.synth.volume.value = prevVol; }, 300);
+    this.synth.volume.value = -18;
+    this.synth.triggerAttackRelease(freqs, 0.3);
+    setTimeout(() => { this.synth.volume.value = prevVol; }, 350);
   }
 
   /** Play a sequence of chords for mood preview */
