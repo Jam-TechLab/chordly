@@ -73,7 +73,7 @@ class AudioManager {
 
   /**
    * Play full progression with playhead tracking.
-   * Uses WebAudio Hardware Timeline (Tone.now) for 0% mobile CPU overhead and 0% noise.
+   * Uses Tone.Transport for clean hardware timing + 100% instant Stop cancellation.
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -83,65 +83,66 @@ class AudioManager {
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
-    // Direct C++ WebAudio Hardware Timeline baseline
-    const startTime = Tone.now() + 0.05;
-
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
-      const chordTime = startTime + idx * secPerChord;
+      const chordTime = idx * secPerChord;
 
-      // 1. Pre-schedule chord directly onto C++ native WebAudio hardware engine (0% JS thread CPU overhead = ZERO NOISE)
-      this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
+      // 1. Schedule chord sound on Tone.Transport
+      const eventId = Tone.Transport.schedule((time) => {
+        this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, time);
+      }, chordTime);
+      this.scheduledEvents.push(eventId);
 
-      // 2. Pre-schedule beat clicks directly onto C++ hardware engine if metronome is enabled
+      // 2. Schedule beat clicks if metronome enabled
       if (this.isMetronomeEnabled) {
         for (let b = 0; b < beatsPerChord; b++) {
-          const beatTime = startTime + idx * secPerChord + b * secPerBeat;
+          const beatTime = chordTime + b * secPerBeat;
           const pitch = (b === 0) ? 'G5' : 'C5';
-          this.clickSynth.triggerAttackRelease(pitch, '32n', beatTime);
+          const clickId = Tone.Transport.schedule((time) => {
+            this.clickSynth.triggerAttackRelease(pitch, '32n', time);
+          }, beatTime);
+          this.scheduledEvents.push(clickId);
         }
       }
 
-      // 3. UI Playhead tracking (pure JS visual timer)
+      // 3. Schedule UI Playhead update
       if (onChordPlay) {
-        const timerId = setTimeout(() => {
-          if (this.isPlaying && !document.hidden) onChordPlay(idx);
-        }, (idx * secPerChord) * 1000);
-        this.scheduledEvents.push(timerId);
+        const uiId = Tone.Transport.schedule((time) => {
+          Tone.Draw.schedule(() => {
+            if (this.isPlaying && !document.hidden) onChordPlay(idx);
+          }, time);
+        }, chordTime);
+        this.scheduledEvents.push(uiId);
       }
     });
 
     // Schedule End
     const totalDuration = allChords.length * secPerChord;
-    const endTimerId = setTimeout(() => {
-      this.isPlaying = false;
-      if (onChordPlay && !document.hidden) onChordPlay(-1);
-    }, totalDuration * 1000);
-    this.scheduledEvents.push(endTimerId);
+    const endId = Tone.Transport.schedule((time) => {
+      Tone.Draw.schedule(() => {
+        this.isPlaying = false;
+        if (onChordPlay && !document.hidden) onChordPlay(-1);
+      }, time);
+      this.stopAll();
+    }, totalDuration);
+    this.scheduledEvents.push(endId);
+
+    Tone.Transport.bpm.value = bpm;
+    Tone.Transport.start();
 
     const stopFn = () => this.stopAll();
     this.currentStopFn = stopFn;
     return stopFn;
   }
 
-  /** Stop all playback immediately — cancels JS timers and resets C++ hardware timeline nodes */
+  /** Stop all playback immediately — cancels transport timeline and silences voices */
   stopAll() {
-    // 1. Clear UI timers
-    this.scheduledEvents.forEach(id => clearTimeout(id));
+    Tone.Transport.stop();
+    Tone.Transport.cancel();
     this.scheduledEvents = [];
-
-    // 2. Instantly silence and cancel queued hardware timeline notes
-    if (this.synth) {
-      this.synth.releaseAll();
-      // Reset voice allocation & disconnect node to drop queued future WebAudio events instantly
-      this.synth.disconnect();
-      this.synth.toDestination();
-    }
-    if (this.clickSynth) {
-      this.clickSynth.disconnect();
-      this.clickSynth.toDestination();
-    }
+    if (this.synth) this.synth.releaseAll();
+    if (this.clickSynth) this.clickSynth.releaseAll();
     this.isPlaying = false;
   }
 
