@@ -17,6 +17,9 @@ class AudioManager {
   async init() {
     if (this.isInitialized) return;
     await Tone.start();
+    if (Tone.context.state !== 'running') {
+      await Tone.context.resume();
+    }
 
     // Bright, rich Piano PolySynth
     this.synth = new Tone.PolySynth(Tone.Synth, {
@@ -39,12 +42,13 @@ class AudioManager {
     this.clickSynth.volume.value = -6; // Prominent, clear beat volume!
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with crisp beat clicks');
+    console.log('[AudioManager] Initialized successfully');
   }
 
   /** Play a chord (array of MIDI note numbers) */
   playChord(midiNotes, duration = 0.8) {
     if (!this.isInitialized || !midiNotes.length) return;
+    if (Tone.context.state !== 'running') Tone.context.resume();
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     this.synth.triggerAttackRelease(freqs, duration);
   }
@@ -52,6 +56,7 @@ class AudioManager {
   /** Play a short preview of a chord (for hover) */
   playChordPreview(midiNotes) {
     if (!this.isInitialized || !midiNotes.length) return;
+    if (Tone.context.state !== 'running') Tone.context.resume();
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     const prevVol = this.synth.volume.value;
     this.synth.volume.value = -16;
@@ -62,6 +67,7 @@ class AudioManager {
   /** Play a sequence of chords for mood preview */
   playMoodPreview(chordSymbols) {
     if (!this.isInitialized) return;
+    if (Tone.context.state !== 'running') Tone.context.resume();
     chordSymbols.forEach((sym, i) => {
       const notes = chordEngine.getChordMidi(sym);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
@@ -75,8 +81,11 @@ class AudioManager {
    * Play full progression with playhead tracking.
    * Direct WebAudio hardware scheduling via Tone.now() — 100% reliable across all devices.
    */
-  playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
-    if (!this.isInitialized) return () => {};
+  async playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
+    if (!this.isInitialized) await this.init();
+    if (Tone.context.state !== 'running') {
+      await Tone.context.resume();
+    }
     this.stopAll();
 
     this.isPlaying = true;

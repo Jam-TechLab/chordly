@@ -168,9 +168,12 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // Play button
-  document.getElementById('btn-play').addEventListener('click', () => {
+  document.getElementById('btn-play').addEventListener('click', async () => {
+    if (Tone.context.state !== 'running') {
+      await Tone.context.resume();
+    }
     if (state.isPlaying) return;
-    playFullSong();
+    await playFullSong();
   });
 
   // Stop button
@@ -439,15 +442,19 @@ function regenerateChords() {
   uiManager.hideSuggestionPanel();
 }
 
-function playFullSong() {
+async function playFullSong() {
+  if (!state.songData || !state.songData.sections) return;
   audioManager.stopAll();
   const flatChords = [];
   state.songData.sections.forEach(sec => {
-    sec.chords.forEach(c => flatChords.push({ symbol: c }));
+    if (sec.chords) {
+      sec.chords.forEach(c => flatChords.push({ symbol: c }));
+    }
   });
+  if (!flatChords.length) return;
 
   state.isPlaying = true;
-  state.stopPlayback = audioManager.playProgression(
+  state.stopPlayback = await audioManager.playProgression(
     flatChords,
     state.songData.tempo,
     state.songData.chordDurationBeats,
