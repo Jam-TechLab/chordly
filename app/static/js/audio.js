@@ -15,21 +15,9 @@ class AudioManager {
   /** Initialize Tone.js — must be called after a user gesture */
   async init() {
     if (this.isInitialized) return;
-
-    // Mobile Web Audio Buffer Fix: Set latencyHint to 'playback' and lookAhead to 0.1s.
-    // On mobile devices (iOS Safari / Android Chrome), the default 'interactive' buffer (128 samples)
-    // starves mobile ARM CPUs, causing continuous hardware audio crackling. 'playback' expands the buffer.
-    Tone.setContext(new Tone.Context({
-      latencyHint: 'playback',
-      lookAhead: 0.1
-    }));
-
     await Tone.start();
-    if (Tone.context.state !== 'running') {
-      await Tone.context.resume();
-    }
 
-    // Bright, rich Piano PolySynth (Triangle wave)
+    // Bright, rich Piano PolySynth
     this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: {
@@ -41,8 +29,16 @@ class AudioManager {
     }).toDestination();
     this.synth.volume.value = -8;
 
+    // Crisp, prominent Beat Metronome Synth (Woodblock / Rimshot sound)
+    this.clickSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.005,
+      octaves: 2,
+      envelope: { attack: 0.001, decay: 0.08, sustain: 0, release: 0.03 }
+    }).toDestination();
+    this.clickSynth.volume.value = -6; // Prominent, clear beat volume!
+
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with mobile playback buffer');
+    console.log('[AudioManager] Initialized with crisp beat clicks');
   }
 
   /** Play a chord (array of MIDI note numbers) */
@@ -75,8 +71,7 @@ class AudioManager {
   }
 
   /**
-   * Play full progression with playhead tracking.
-   * Pre-schedules all audio events directly onto the OS Hardware WebAudio Timeline (Tone.now()).
+   * Play full progression with playhead tracking and prominent beat clicks.
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -86,22 +81,29 @@ class AudioManager {
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
-    const startTime = Tone.now() + 0.05; // WebAudio hardware clock baseline
-
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
-      const chordTime = startTime + idx * secPerChord;
 
-      // 1. Direct WebAudio hardware scheduling for chords
-      this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
+      // 1. Play chord sound at start of measure
+      const timerId = setTimeout(() => {
+        if (this.isPlaying) {
+          this.synth.triggerAttackRelease(freqs, secPerChord * 0.9);
+          if (onChordPlay && !document.hidden) onChordPlay(idx);
+        }
+      }, (idx * secPerChord) * 1000);
+      this.scheduledEvents.push(timerId);
 
-      // 2. UI Playhead tracking
-      if (onChordPlay) {
-        const timerId = setTimeout(() => {
-          if (this.isPlaying && !document.hidden) onChordPlay(idx);
-        }, (idx * secPerChord) * 1000);
-        this.scheduledEvents.push(timerId);
+      // 2. Play crisp, loud beat clicks (4 beats per chord measure)
+      for (let b = 0; b < beatsPerChord; b++) {
+        const beatOffset = (idx * secPerChord + b * secPerBeat) * 1000;
+        const pitch = (b === 0) ? 'G5' : 'C5'; // G5 accent on Beat 1, C5 on Beats 2,3,4
+        const beatTimerId = setTimeout(() => {
+          if (this.isPlaying) {
+            this.clickSynth.triggerAttackRelease(pitch, '32n');
+          }
+        }, beatOffset);
+        this.scheduledEvents.push(beatTimerId);
       }
     });
 
@@ -118,7 +120,7 @@ class AudioManager {
     return stopFn;
   }
 
-  /** Stop all playback */
+  /** Stop all playback immediately */
   stopAll() {
     this.scheduledEvents.forEach(id => clearTimeout(id));
     this.scheduledEvents = [];
