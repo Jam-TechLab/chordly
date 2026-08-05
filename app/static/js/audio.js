@@ -17,38 +17,33 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // Master Limiter to prevent digital clipping
-    this.limiter = new Tone.Limiter(-2).toDestination();
-
-    // PolySynth with maxPolyphony limit for mobile CPU optimization
+    // Piano-like PolySynth connected directly to Destination (no harsh Limiter clipping)
     this.synth = new Tone.PolySynth(Tone.Synth, {
-      maxPolyphony: 6,
       oscillator: { type: 'triangle' },
       envelope: {
         attack: 0.01,
-        decay: 0.35,
-        sustain: 0.3,
-        release: 0.35
+        decay: 0.4,
+        sustain: 0.35,
+        release: 1.2
       }
-    }).connect(this.limiter);
-    this.synth.volume.value = -10;
+    }).toDestination();
+    this.synth.volume.value = -12;
 
-    // Click synth for metronome (lightweight for mobile CPU)
+    // Click synth for metronome
     this.clickSynth = new Tone.MembraneSynth({
-      pitchDecay: 0.005,
-      octaves: 2,
-      envelope: { attack: 0.001, decay: 0.08, sustain: 0, release: 0.03 }
-    }).connect(this.limiter);
+      pitchDecay: 0.008,
+      octaves: 3,
+      envelope: { attack: 0.001, decay: 0.1, sustain: 0, release: 0.04 }
+    }).toDestination();
     this.clickSynth.volume.value = -18;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with mobile voice optimization');
+    console.log('[AudioManager] Initialized with pure audio routing');
   }
 
   /** Play a chord (array of MIDI note numbers) */
   playChord(midiNotes, duration = 0.8) {
     if (!this.isInitialized || !midiNotes.length) return;
-    this.synth.releaseAll();
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     this.synth.triggerAttackRelease(freqs, duration);
   }
@@ -58,7 +53,7 @@ class AudioManager {
     if (!this.isInitialized || !midiNotes.length) return;
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     const prevVol = this.synth.volume.value;
-    this.synth.volume.value = -16;
+    this.synth.volume.value = -18;
     this.synth.triggerAttackRelease(freqs, 0.25);
     setTimeout(() => { this.synth.volume.value = prevVol; }, 300);
   }
@@ -70,8 +65,7 @@ class AudioManager {
       const notes = chordEngine.getChordMidi(sym);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       setTimeout(() => {
-        this.synth.releaseAll();
-        this.synth.triggerAttackRelease(freqs, 0.45);
+        this.synth.triggerAttackRelease(freqs, 0.5);
       }, i * 500);
     });
   }
@@ -103,10 +97,9 @@ class AudioManager {
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       const chordTime = idx * secPerChord;
 
-      // Schedule audio synthesis on Web Audio timeline (release previous voices to prevent voice overload on mobile)
+      // Schedule audio synthesis on Web Audio timeline
       Tone.Transport.schedule(t => {
-        this.synth.releaseAll(t);
-        this.synth.triggerAttackRelease(freqs, secPerChord * 0.85, t);
+        this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, t);
       }, chordTime);
 
       // Schedule UI playhead update safely (skip DOM when tab is hidden)
