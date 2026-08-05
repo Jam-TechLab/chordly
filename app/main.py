@@ -31,6 +31,18 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/manifest.json')
+def serve_manifest():
+    return send_file(os.path.join(app.static_folder, 'manifest.json'), mimetype='application/manifest+json')
+
+
+@app.route('/sw.js')
+def serve_sw():
+    response = send_file(os.path.join(app.static_folder, 'sw.js'), mimetype='application/javascript')
+    response.headers['Service-Worker-Allowed'] = '/'
+    return response
+
+
 @app.route('/api/export/musicxml', methods=['POST'])
 def export_musicxml():
     """Generate and return a MusicXML file from chord progression data."""
