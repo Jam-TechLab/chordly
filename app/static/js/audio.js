@@ -15,11 +15,15 @@ class AudioManager {
   /** Initialize Tone.js — must be called after a user gesture */
   async init() {
     if (this.isInitialized) return;
-    await Tone.start();
+    try {
+      await Tone.start();
+    } catch (e) {
+      console.warn('Tone.start warning:', e);
+    }
 
-    // Mobile Web Audio Buffer Expansion: Expands hardware audio buffer to eliminate smartphone crackling
-    Tone.getContext().latencyHint = 'playback';
-    Tone.getContext().lookAhead = 0.1;
+    try {
+      Tone.context.lookAhead = 0.1;
+    } catch (e) {}
 
     // Bright, rich Piano PolySynth (Triangle wave)
     this.synth = new Tone.PolySynth(Tone.Synth, {
@@ -34,7 +38,7 @@ class AudioManager {
     this.synth.volume.value = -8;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with mobile playback buffer');
+    console.log('[AudioManager] Initialized successfully');
   }
 
   /** Play a chord (array of MIDI note numbers) */
