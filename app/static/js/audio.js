@@ -83,6 +83,12 @@ class AudioManager {
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
+    // Reset Transport to position 0 and clear any leftover events
+    Tone.Transport.stop();
+    Tone.Transport.cancel();
+    Tone.Transport.position = 0;
+    Tone.Transport.bpm.value = bpm;
+
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
@@ -128,8 +134,7 @@ class AudioManager {
     }, totalDuration);
     this.scheduledEvents.push(endId);
 
-    Tone.Transport.bpm.value = bpm;
-    Tone.Transport.start();
+    Tone.Transport.start('+0.05');
 
     const stopFn = () => this.stopAll();
     this.currentStopFn = stopFn;
@@ -140,6 +145,7 @@ class AudioManager {
   stopAll() {
     Tone.Transport.stop();
     Tone.Transport.cancel();
+    Tone.Transport.position = 0;
     this.scheduledEvents = [];
     if (this.synth) this.synth.releaseAll();
     if (this.clickSynth) this.clickSynth.releaseAll();
