@@ -53,12 +53,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Tempo change → metronome feedback
-  document.getElementById('input-tempo').addEventListener('change', (e) => {
-    const bpm = parseInt(e.target.value);
-    if (bpm > 0) audioManager.playMetronome(bpm);
-  });
-
   // おまかせ checkbox
   document.getElementById('chk-tempo-auto').addEventListener('change', (e) => {
     const tempoInput = document.getElementById('input-tempo');
@@ -110,7 +104,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const newBpm = parseInt(e.target.value);
       if (newBpm >= 40 && newBpm <= 240 && state.songData) {
         state.songData.tempo = newBpm;
-        if (state.isPlaying) Tone.Transport.bpm.value = newBpm;
       }
     });
   }
@@ -455,6 +448,7 @@ function playFullSong() {
 function stopPlayback() {
   audioManager.stopAll();
   state.isPlaying = false;
+  state.stopPlayback = null;
   uiManager.clearPlayhead();
 }
 

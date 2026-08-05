@@ -17,8 +17,14 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // Bright, rich Piano PolySynth
-    this.synth = new Tone.PolySynth(Tone.Synth, {
+    this.synth = this._createPianoSynth();
+
+    this.isInitialized = true;
+    console.log('[AudioManager] Initialized with clean piano routing');
+  }
+
+  _createPianoSynth() {
+    const synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: {
         attack: 0.01,
@@ -27,10 +33,8 @@ class AudioManager {
         release: 1.2
       }
     }).toDestination();
-    this.synth.volume.value = -8;
-
-    this.isInitialized = true;
-    console.log('[AudioManager] Initialized with clean piano routing');
+    synth.volume.value = -8;
+    return synth;
   }
 
   /** Play a chord (array of MIDI note numbers) */
@@ -64,7 +68,8 @@ class AudioManager {
 
   /**
    * Play full progression with playhead tracking.
-   * Pre-schedules all audio events directly onto the OS Hardware WebAudio Timeline (Tone.now()).
+   * Audio is scheduled on the Web Audio hardware timeline. This avoids timer jitter
+   * and crackling on mobile devices while UI updates remain ordinary timers.
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -74,21 +79,18 @@ class AudioManager {
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
-    const startTime = Tone.now() + 0.05; // WebAudio hardware clock baseline
+    const startTime = Tone.now() + 0.05;
 
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       const chordTime = startTime + idx * secPerChord;
-
-      // 1. Direct WebAudio hardware scheduling for chords
       this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
 
-      // 2. UI Playhead tracking
       if (onChordPlay) {
         const timerId = setTimeout(() => {
           if (this.isPlaying && !document.hidden) onChordPlay(idx);
-        }, (idx * secPerChord) * 1000);
+        }, idx * secPerChord * 1000);
         this.scheduledEvents.push(timerId);
       }
     });
@@ -106,18 +108,17 @@ class AudioManager {
     return stopFn;
   }
 
-  /** Stop all playback immediately — halts current note and silences future scheduled notes */
+  /** Stop all playback immediately, including notes already queued on Web Audio's timeline. */
   stopAll() {
     this.scheduledEvents.forEach(id => clearTimeout(id));
     this.scheduledEvents = [];
     if (this.synth) {
       this.synth.releaseAll();
-      try {
-        const now = Tone.now();
-        this.synth.volume.cancelScheduledValues(now);
-        this.synth.volume.setValueAtTime(-Infinity, now);
-        this.synth.volume.setValueAtTime(-8, now + 0.05);
-      } catch (e) {}
+      // A scheduled Tone voice cannot be cancelled individually. Disposing this
+      // synth permanently disconnects its queued voices; the next play gets a
+      // clean synth, so old scheduled notes can never resume after Stop.
+      this.synth.dispose();
+      this.synth = this._createPianoSynth();
     }
     this.isPlaying = false;
   }
