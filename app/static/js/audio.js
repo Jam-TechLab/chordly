@@ -15,6 +15,15 @@ class AudioManager {
   /** Initialize Tone.js — must be called after a user gesture */
   async init() {
     if (this.isInitialized) return;
+
+    // Mobile Web Audio Buffer Fix: Set latencyHint to 'playback' and lookAhead to 0.1s.
+    // On mobile devices (iOS Safari / Android Chrome), the default 'interactive' buffer (128 samples)
+    // starves mobile ARM CPUs, causing continuous hardware audio crackling. 'playback' expands the buffer.
+    Tone.setContext(new Tone.Context({
+      latencyHint: 'playback',
+      lookAhead: 0.1
+    }));
+
     await Tone.start();
 
     // Bright, rich Piano PolySynth
@@ -30,7 +39,7 @@ class AudioManager {
     this.synth.volume.value = -8;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with clean piano routing');
+    console.log('[AudioManager] Initialized with mobile playback buffer');
   }
 
   /** Play a chord (array of MIDI note numbers) */
