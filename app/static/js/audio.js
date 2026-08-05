@@ -29,16 +29,16 @@ class AudioManager {
     this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: {
-        attack: 0.015,
+        attack: 0.03,
         decay: 0.4,
-        sustain: 0.35,
-        release: 1.2
+        sustain: 0.3,
+        release: 1.0
       }
     }).connect(this.filter);
-    this.synth.volume.value = -8;
+    this.synth.volume.value = -16; // Attenuate master volume so multi-note chords never exceed 0dB on mobile DACs
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with expanded 0.25s lookAhead buffer');
+    console.log('[AudioManager] Initialized with normalized mobile volume');
   }
 
   /** Play a chord (array of MIDI note numbers) */
