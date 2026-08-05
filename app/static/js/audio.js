@@ -17,31 +17,31 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // Master Limiter to prevent any digital clipping / crackling on mobile speakers
+    // Master Limiter to prevent digital clipping
     this.limiter = new Tone.Limiter(-2).toDestination();
 
-    // Piano-like PolySynth with smooth attack & warm tone
+    // Piano-like PolySynth
     this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: {
-        attack: 0.03,
-        decay: 0.5,
-        sustain: 0.4,
+        attack: 0.01,
+        decay: 0.4,
+        sustain: 0.3,
         release: 1.0
       }
     }).connect(this.limiter);
-    this.synth.volume.value = -12;
+    this.synth.volume.value = -10;
 
     // Click synth for metronome
     this.clickSynth = new Tone.MembraneSynth({
       pitchDecay: 0.008,
       octaves: 4,
-      envelope: { attack: 0.005, decay: 0.12, sustain: 0, release: 0.05 }
+      envelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.05 }
     }).connect(this.limiter);
-    this.clickSynth.volume.value = -18;
+    this.clickSynth.volume.value = -16;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with master limiter');
+    console.log('[AudioManager] Initialized');
   }
 
   /** Play a chord (array of MIDI note numbers) */
@@ -56,9 +56,9 @@ class AudioManager {
     if (!this.isInitialized || !midiNotes.length) return;
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     const prevVol = this.synth.volume.value;
-    this.synth.volume.value = -18;
-    this.synth.triggerAttackRelease(freqs, 0.3);
-    setTimeout(() => { this.synth.volume.value = prevVol; }, 350);
+    this.synth.volume.value = -16;
+    this.synth.triggerAttackRelease(freqs, 0.25);
+    setTimeout(() => { this.synth.volume.value = prevVol; }, 300);
   }
 
   /** Play a sequence of chords for mood preview */
@@ -84,7 +84,7 @@ class AudioManager {
 
   /**
    * Play full progression with playhead tracking and beat clicks.
-   * Returns a stop function.
+   * Guarded against background tab CPU throttling on mobile browsers.
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -100,36 +100,39 @@ class AudioManager {
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       const chordTime = idx * secPerChord;
 
-      // Schedule chord sound
-      const eventId = Tone.Transport.schedule(t => {
+      // Schedule audio synthesis on Web Audio timeline
+      Tone.Transport.schedule(t => {
         this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, t);
-        if (onChordPlay) {
-          Tone.Draw.schedule(() => onChordPlay(idx), t);
-        }
       }, chordTime);
-      this.scheduledEvents.push(eventId);
 
-      // Schedule beat clicks within this chord (低 -> 高 -> 低 -> 高)
+      // Schedule UI playhead update safely (skip DOM when tab is hidden)
+      if (onChordPlay) {
+        Tone.Transport.schedule(t => {
+          Tone.Draw.schedule(() => {
+            if (!document.hidden) onChordPlay(idx);
+          }, t);
+        }, chordTime);
+      }
+
+      // Schedule beat clicks
       for (let b = 0; b < beatsPerChord; b++) {
         const beatTime = chordTime + b * secPerBeat;
-        const clickId = Tone.Transport.schedule(t => {
-          const pitch = (b % 2 === 0) ? 'C2' : 'C3';
+        const pitch = (b % 2 === 0) ? 'C2' : 'C3';
+        Tone.Transport.schedule(t => {
           this.clickSynth.triggerAttackRelease(pitch, '32n', t);
         }, beatTime);
-        this.scheduledEvents.push(clickId);
       }
     });
 
     // Schedule end
     const totalDuration = allChords.length * secPerChord;
-    const endEventId = Tone.Transport.schedule(() => {
+    Tone.Transport.schedule(t => {
       this.isPlaying = false;
-      if (onChordPlay) {
-        Tone.Draw.schedule(() => onChordPlay(-1), Tone.now());
-      }
+      Tone.Draw.schedule(() => {
+        if (onChordPlay) onChordPlay(-1);
+      }, t);
       this.stopAll();
     }, totalDuration);
-    this.scheduledEvents.push(endEventId);
 
     Tone.Transport.bpm.value = bpm;
     Tone.Transport.start();

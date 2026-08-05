@@ -418,6 +418,8 @@ class UIManager {
 
   /** Update playhead to highlight a specific chord block */
   updatePlayhead(flatIndex) {
+    if (document.hidden) return;
+
     const blocks = document.querySelectorAll('.chord-block');
     blocks.forEach((el, i) => {
       if (i === flatIndex) {
