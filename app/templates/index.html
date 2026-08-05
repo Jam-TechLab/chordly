@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Chordly - Grammarly for Chord Progressions. Build, hear, and refine chord progressions with intelligent suggestions.">
+    <title>Chordly — Grammarly for Chord Progressions</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Tone.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <!-- Local CSS -->
+    <link rel="stylesheet" href="/static/css/style.css?v=3">
+</head>
+<body>
+    <div class="app-container">
+
+        <!-- Audio Activation Overlay -->
+        <div id="audio-overlay" class="modal-overlay open">
+            <div class="modal-content" style="text-align:center;">
+                <div style="font-size:3rem;margin-bottom:16px;">🎹</div>
+                <h2 style="margin-bottom:8px;">Chordly</h2>
+                <p style="color:var(--text-secondary);margin-bottom:24px;">Grammarly for Chord Progressions</p>
+                <button id="btn-activate-audio" class="btn btn-primary" style="font-size:1rem;">
+                    🔊 オーディオを有効化してスタート
+                </button>
+            </div>
+        </div>
+
+        <!-- Setup Modal -->
+        <div id="setup-modal" class="modal-overlay">
+            <div class="modal-content" style="max-width:720px;">
+                <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;">
+                    <h2>🎼 曲の設定</h2>
+                    <button id="btn-cancel-setup" class="btn-icon" style="display:none;font-size:1.25rem;color:var(--text-secondary);" title="キャンセル（エディタに戻る）">✕</button>
+                </div>
+
+                <!-- Global Settings -->
+                <div class="setup-row">
+                    <div class="form-group">
+                        <label for="input-tempo">テンポ (BPM)</label>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <input type="number" id="input-tempo" class="form-control" value="120" min="40" max="240" style="width:100px;">
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;">
+                                <input type="checkbox" id="chk-tempo-auto"> おまかせ
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="input-chord-width">コード切り替え幅</label>
+                        <select id="input-chord-width" class="form-control" style="width:120px;">
+                            <option value="1">1拍</option>
+                            <option value="2" selected>2拍</option>
+                            <option value="4">4拍 (1小節)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Sections -->
+                <div style="margin-bottom:12px;">
+                    <label style="color:var(--text-secondary);font-size:0.875rem;">セクション構成</label>
+                </div>
+                <div id="setup-sections"></div>
+
+                <button id="btn-add-section" class="btn btn-secondary" style="width:100%;margin-bottom:24px;">
+                    + セクション追加
+                </button>
+
+                <div style="display:flex;gap:12px;">
+                    <button id="btn-cancel-setup-footer" class="btn btn-secondary" style="display:none;padding:14px;width:120px;">
+                        キャンセル
+                    </button>
+                    <button id="btn-generate" class="btn btn-primary" style="font-size:1.05rem;padding:14px;flex:1;">
+                        🎲 コード進行を生成！
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Editor -->
+        <div id="main-editor" style="display:none;">
+            <!-- Header -->
+            <header class="app-header">
+                <div class="header-left">
+                    <div class="app-title">Chordly</div>
+                    <div class="transport-controls">
+                        <button id="btn-play" class="btn btn-secondary btn-play" title="再生 (最初から)">▶ 再生</button>
+                        <button id="btn-stop" class="btn btn-secondary btn-stop" title="停止">⏹ 停止</button>
+                    </div>
+                </div>
+                <div class="header-center">
+                    <span class="global-setting">
+                        BPM: <input type="number" id="header-bpm" class="header-control-input" value="120" min="40" max="240">
+                    </span>
+                    <span class="global-setting">
+                        拍子:
+                        <select id="header-timesig" class="header-control-select">
+                            <option value="4/4" selected>4/4</option>
+                            <option value="3/4">3/4</option>
+                        </select>
+                    </span>
+                    <span class="global-setting">
+                        幅:
+                        <select id="header-chord-width" class="header-control-select">
+                            <option value="1">1拍</option>
+                            <option value="2" selected>2拍</option>
+                            <option value="4">4拍 (1小節)</option>
+                        </select>
+                    </span>
+                </div>
+                <div class="header-right">
+                    <button id="btn-regenerate" class="btn btn-secondary">🎲 再生成</button>
+                    <button id="btn-setup" class="btn btn-secondary">⚙ 設定</button>
+                    <button id="btn-export-modal" class="btn btn-secondary">⬇ Export</button>
+                </div>
+            </header>
+
+            <!-- Editor Canvas -->
+            <main id="editor-canvas" class="main-area"></main>
+
+            <!-- Suggestion Panel -->
+            <div id="suggestion-panel" class="suggestion-panel">
+                <div class="suggestion-header">
+                    <span id="suggestion-title" style="font-weight:600;">💡 候補を選択</span>
+                    <button id="btn-close-suggestions" class="btn-icon" style="color:var(--text-secondary);">✕</button>
+                </div>
+                <div class="suggestion-tabs">
+                    <button class="tab-btn active" data-category="jazzy">✨ おしゃれに</button>
+                    <button class="tab-btn" data-category="bright">☀️ 明るく</button>
+                    <button class="tab-btn" data-category="dark">🌙 暗く</button>
+                    <button class="tab-btn" data-category="beautiful">🌸 きれいに</button>
+                    <button class="tab-btn" data-category="setsunai">💧 切なく</button>
+                    <button class="tab-btn" data-category="powerful">🔥 力強く</button>
+                    <button class="tab-btn" data-category="calm">🍃 穏やかに</button>
+                    <button class="tab-btn" data-category="emotional">💜 エモく</button>
+                    <button class="tab-btn" data-category="pop">🎵 ポップに</button>
+                    <button class="tab-btn" data-category="cinematic">🎬 ドラマチックに</button>
+                </div>
+                <div class="tab-content-container">
+                    <div id="suggestion-content" class="suggestion-grid"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export Modal -->
+        <div id="export-modal" class="modal-overlay">
+            <div class="modal-content" style="max-width:480px;text-align:center;">
+                <div class="modal-header">
+                    <h2>⬇ エクスポート</h2>
+                    <button id="btn-close-export" class="btn-icon" style="font-size:1.25rem;">✕</button>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:12px;">
+                    <button id="btn-download-wav" class="btn btn-primary">
+                        🎵 WAV (オーディオ) をダウンロード
+                    </button>
+                    <button id="btn-download-xml" class="btn btn-primary" style="background:linear-gradient(135deg,#6366f1,#c084fc);">
+                        📄 MusicXML (.musicxml) をダウンロード
+                    </button>
+                    <button id="btn-download-midi" class="btn btn-secondary">
+                        🎹 MIDI (.mid) をダウンロード
+                    </button>
+                    <div id="export-progress" style="display:none;color:var(--text-secondary);font-size:0.875rem;">
+                        <div class="progress-bar"><div class="progress-fill" id="export-progress-fill"></div></div>
+                        <span id="export-status">レンダリング中...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Section Setup Template -->
+    <template id="section-setup-template">
+        <div class="section-setup-row">
+            <select class="form-control select-section-type" style="width:110px;">
+                <option value="intro">Intro</option>
+                <option value="verse" selected>Aメロ</option>
+                <option value="verse2">A'メロ</option>
+                <option value="bridge">Bメロ</option>
+                <option value="chorus">サビ</option>
+                <option value="interlude">間奏</option>
+                <option value="outro">Outro</option>
+            </select>
+            <select class="form-control select-key" style="width:85px;">
+                <option value="auto">🎲 おまかせ</option>
+                <option value="C">C — 純粋</option><option value="C#">C# — 神秘</option>
+                <option value="D">D — 華やか</option><option value="Eb">E♭ — 英雄</option>
+                <option value="E">E — 輝き</option><option value="F">F — 穏やか</option>
+                <option value="F#">F# — 幻想</option><option value="G">G — 爽やか</option>
+                <option value="Ab">A♭ — 甘美</option><option value="A">A — 情熱</option>
+                <option value="Bb">B♭ — 柔和</option><option value="B">B — 鋭い</option>
+            </select>
+            <select class="form-control select-mode" style="width:100px;">
+                <option value="auto">🎲 おまかせ</option>
+                <option value="major">Major</option>
+                <option value="minor">Minor</option>
+            </select>
+            <select class="form-control select-image" style="width:150px;">
+                <option value="jazzy">✨ おしゃれに</option>
+                <option value="bright">☀️ 明るく</option>
+                <option value="dark">🌙 暗く</option>
+                <option value="beautiful">🌸 きれいに</option>
+                <option value="setsunai">💧 切なく</option>
+                <option value="powerful">🔥 力強く</option>
+                <option value="calm">🍃 穏やかに</option>
+                <option value="emotional">💜 エモく</option>
+                <option value="pop">🎵 ポップに</option>
+                <option value="cinematic">🎬 ドラマチックに</option>
+            </select>
+            <div style="display:flex;align-items:center;gap:4px;">
+                <input type="number" class="form-control input-measures" value="4" min="1" max="16" style="width:55px;" title="小節数">
+                <span style="font-size:0.8rem;color:var(--text-secondary);">小節</span>
+            </div>
+            <button class="btn-icon btn-remove-section" title="削除" style="color:var(--accent-warm);">✕</button>
+        </div>
+    </template>
+
+    <!-- Local JS -->
+    <script src="/static/js/chord-engine.js?v=21"></script>
+    <script src="/static/js/audio.js?v=21"></script>
+    <script src="/static/js/ui.js?v=21"></script>
+    <script src="/static/js/app.js?v=21"></script>
+</body>
+</html>
