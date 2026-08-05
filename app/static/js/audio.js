@@ -81,11 +81,8 @@ class AudioManager {
    * Play full progression with playhead tracking.
    * Direct WebAudio hardware scheduling via Tone.now() — 100% reliable across all devices.
    */
-  async playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
-    if (!this.isInitialized) await this.init();
-    if (Tone.context.state !== 'running') {
-      await Tone.context.resume();
-    }
+  playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
+    if (!this.isInitialized || !this.synth) return () => {};
     this.stopAll();
 
     this.isPlaying = true;
