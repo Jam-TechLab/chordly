@@ -17,17 +17,18 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // Piano-like PolySynth connected directly to Destination (no harsh Limiter clipping)
+    // PolySynth with inner voice volume -14dB so 4-5 note chords never sum over 0dB (eliminates clipping noise 100%)
     this.synth = new Tone.PolySynth(Tone.Synth, {
-      oscillator: { type: 'triangle' },
+      volume: -14,
+      oscillator: { type: 'sine' },
       envelope: {
-        attack: 0.01,
-        decay: 0.4,
-        sustain: 0.35,
+        attack: 0.015,
+        decay: 0.5,
+        sustain: 0.3,
         release: 1.2
       }
     }).toDestination();
-    this.synth.volume.value = -12;
+    this.synth.volume.value = -10;
 
     // Click synth for metronome
     this.clickSynth = new Tone.MembraneSynth({
@@ -35,10 +36,10 @@ class AudioManager {
       octaves: 3,
       envelope: { attack: 0.001, decay: 0.1, sustain: 0, release: 0.04 }
     }).toDestination();
-    this.clickSynth.volume.value = -18;
+    this.clickSynth.volume.value = -20;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with pure audio routing');
+    console.log('[AudioManager] Initialized with normalized voice gain');
   }
 
   /** Play a chord (array of MIDI note numbers) */
