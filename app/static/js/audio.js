@@ -8,7 +8,6 @@ class AudioManager {
     this.synth = null;
     this.isInitialized = false;
     this.isPlaying = false;
-    this.isMetronomeEnabled = false; // Default OFF to ensure 100% noise-free playback on mobile
     this.scheduledEvents = [];
     this.currentStopFn = null;
   }
@@ -17,9 +16,6 @@ class AudioManager {
   async init() {
     if (this.isInitialized) return;
     await Tone.start();
-    if (Tone.context.state !== 'running') {
-      await Tone.context.resume();
-    }
 
     // Bright, rich Piano PolySynth
     this.synth = new Tone.PolySynth(Tone.Synth, {
@@ -33,22 +29,13 @@ class AudioManager {
     }).toDestination();
     this.synth.volume.value = -8;
 
-    // Crisp, prominent Beat Metronome Synth (Woodblock / Rimshot sound)
-    this.clickSynth = new Tone.MembraneSynth({
-      pitchDecay: 0.005,
-      octaves: 2,
-      envelope: { attack: 0.001, decay: 0.08, sustain: 0, release: 0.03 }
-    }).toDestination();
-    this.clickSynth.volume.value = -6; // Prominent, clear beat volume!
-
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized successfully');
+    console.log('[AudioManager] Initialized with clean piano routing');
   }
 
   /** Play a chord (array of MIDI note numbers) */
   playChord(midiNotes, duration = 0.8) {
     if (!this.isInitialized || !midiNotes.length) return;
-    if (Tone.context.state !== 'running') Tone.context.resume();
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     this.synth.triggerAttackRelease(freqs, duration);
   }
@@ -56,7 +43,6 @@ class AudioManager {
   /** Play a short preview of a chord (for hover) */
   playChordPreview(midiNotes) {
     if (!this.isInitialized || !midiNotes.length) return;
-    if (Tone.context.state !== 'running') Tone.context.resume();
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     const prevVol = this.synth.volume.value;
     this.synth.volume.value = -16;
@@ -67,7 +53,6 @@ class AudioManager {
   /** Play a sequence of chords for mood preview */
   playMoodPreview(chordSymbols) {
     if (!this.isInitialized) return;
-    if (Tone.context.state !== 'running') Tone.context.resume();
     chordSymbols.forEach((sym, i) => {
       const notes = chordEngine.getChordMidi(sym);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
@@ -79,37 +64,27 @@ class AudioManager {
 
   /**
    * Play full progression with playhead tracking.
-   * Direct WebAudio hardware scheduling via Tone.now() — 100% reliable across all devices.
+   * Pre-schedules all audio events directly onto the OS Hardware WebAudio Timeline (Tone.now()).
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
-    if (!this.isInitialized || !this.synth) return () => {};
+    if (!this.isInitialized) return () => {};
     this.stopAll();
 
     this.isPlaying = true;
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
-    // WebAudio direct hardware timeline start
-    const startTime = Tone.now() + 0.05;
+    const startTime = Tone.now() + 0.05; // WebAudio hardware clock baseline
 
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       const chordTime = startTime + idx * secPerChord;
 
-      // 1. Direct WebAudio hardware synth trigger (ALWAYS PLAYS 100% RELIABLY)
+      // 1. Direct WebAudio hardware scheduling for chords
       this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
 
-      // 2. Direct WebAudio hardware metronome trigger (if enabled)
-      if (this.isMetronomeEnabled && this.clickSynth) {
-        for (let b = 0; b < beatsPerChord; b++) {
-          const beatTime = chordTime + b * secPerBeat;
-          const pitch = (b === 0) ? 'G5' : 'C5';
-          this.clickSynth.triggerAttackRelease(pitch, '32n', beatTime);
-        }
-      }
-
-      // 3. UI Playhead tracking (pure JS visual indicator)
+      // 2. UI Playhead tracking
       if (onChordPlay) {
         const timerId = setTimeout(() => {
           if (this.isPlaying && !document.hidden) onChordPlay(idx);
@@ -131,12 +106,11 @@ class AudioManager {
     return stopFn;
   }
 
-  /** Stop all playback immediately */
+  /** Stop all playback */
   stopAll() {
     this.scheduledEvents.forEach(id => clearTimeout(id));
     this.scheduledEvents = [];
     if (this.synth) this.synth.releaseAll();
-    if (this.clickSynth) this.clickSynth.releaseAll();
     this.isPlaying = false;
   }
 

@@ -169,7 +169,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Play button
   document.getElementById('btn-play').addEventListener('click', () => {
-    if (Tone.context.state !== 'running') Tone.context.resume();
     if (state.isPlaying) return;
     playFullSong();
   });
@@ -178,23 +177,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-stop').addEventListener('click', () => {
     stopPlayback();
   });
-
-  // Metronome toggle button (Default OFF to guarantee 0% noise on mobile, tap to enable beat)
-  const btnMetronome = document.getElementById('btn-toggle-metronome');
-  if (btnMetronome) {
-    btnMetronome.addEventListener('click', () => {
-      audioManager.isMetronomeEnabled = !audioManager.isMetronomeEnabled;
-      if (audioManager.isMetronomeEnabled) {
-        btnMetronome.innerHTML = '🥁 ビート: ON';
-        btnMetronome.style.background = 'var(--accent-primary)';
-        btnMetronome.style.color = '#ffffff';
-      } else {
-        btnMetronome.innerHTML = '🥁 ビート: OFF';
-        btnMetronome.style.background = '';
-        btnMetronome.style.color = '';
-      }
-    });
-  }
 
   // State for range selection
   let lastClickedBlock = null;
@@ -441,6 +423,9 @@ function regenerateChords() {
 }
 
 function playFullSong() {
+  if (!state.songData) {
+    generateAndRender();
+  }
   if (!state.songData || !state.songData.sections) return;
   audioManager.stopAll();
   const flatChords = [];
