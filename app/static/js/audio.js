@@ -24,26 +24,17 @@ class AudioManager {
 
     await Tone.start();
 
-    // Rich, warm Electric Piano / Rhodes tone using FM Synthesis
-    this.synth = new Tone.PolySynth(Tone.FMSynth, {
-      harmonicity: 3,
-      modulationIndex: 2.5,
+    // Warm Piano / Electric Keys PolySynth (100% compatible across all Tone.js builds)
+    this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'sine' },
       envelope: {
-        attack: 0.008,
-        decay: 0.8,
-        sustain: 0.25,
-        release: 1.2
-      },
-      modulation: { type: 'triangle' },
-      modulationEnvelope: {
         attack: 0.005,
-        decay: 0.2,
-        sustain: 0.01,
-        release: 0.5
+        decay: 0.7,
+        sustain: 0.35,
+        release: 1.2
       }
     }).toDestination();
-    this.synth.volume.value = -10;
+    this.synth.volume.value = -8;
 
     this.isInitialized = true;
     console.log('[AudioManager] Initialized with FM Electric Piano sound');
