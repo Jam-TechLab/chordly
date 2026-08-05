@@ -17,8 +17,6 @@ class AudioManager {
     if (this.isInitialized) return;
 
     // Mobile Web Audio Buffer Fix: Set latencyHint to 'playback' and lookAhead to 0.1s.
-    // On mobile devices (iOS Safari / Android Chrome), the default 'interactive' buffer (128 samples)
-    // starves mobile ARM CPUs, causing continuous hardware audio crackling. 'playback' expands the buffer.
     Tone.setContext(new Tone.Context({
       latencyHint: 'playback',
       lookAhead: 0.1
@@ -26,20 +24,29 @@ class AudioManager {
 
     await Tone.start();
 
-    // Bright, rich Piano PolySynth
-    this.synth = new Tone.PolySynth(Tone.Synth, {
-      oscillator: { type: 'triangle' },
+    // Rich, warm Electric Piano / Rhodes tone using FM Synthesis
+    this.synth = new Tone.PolySynth(Tone.FMSynth, {
+      harmonicity: 3,
+      modulationIndex: 2.5,
+      oscillator: { type: 'sine' },
       envelope: {
-        attack: 0.01,
-        decay: 0.4,
-        sustain: 0.35,
+        attack: 0.008,
+        decay: 0.8,
+        sustain: 0.25,
         release: 1.2
+      },
+      modulation: { type: 'triangle' },
+      modulationEnvelope: {
+        attack: 0.005,
+        decay: 0.2,
+        sustain: 0.01,
+        release: 0.5
       }
     }).toDestination();
-    this.synth.volume.value = -8;
+    this.synth.volume.value = -10;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with mobile playback buffer');
+    console.log('[AudioManager] Initialized with FM Electric Piano sound');
   }
 
   /** Play a chord (array of MIDI note numbers) */
@@ -73,7 +80,7 @@ class AudioManager {
 
   /**
    * Play full progression with playhead tracking.
-   * Pre-schedules all audio events directly onto the OS Hardware WebAudio Timeline (Tone.now()).
+   * Leverages Tone.Transport for clean playback cancellation on Stop.
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -83,42 +90,53 @@ class AudioManager {
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
-    const startTime = Tone.now() + 0.05; // WebAudio hardware clock baseline
-
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
-      const chordTime = startTime + idx * secPerChord;
+      const chordTime = idx * secPerChord;
 
-      // 1. Direct WebAudio hardware scheduling for chords
-      this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
+      // 1. Schedule chord sound
+      const eventId = Tone.Transport.schedule(t => {
+        this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, t);
+      }, chordTime);
+      this.scheduledEvents.push(eventId);
 
-      // 2. UI Playhead tracking
+      // 2. Schedule UI playhead update
       if (onChordPlay) {
-        const timerId = setTimeout(() => {
-          if (this.isPlaying && !document.hidden) onChordPlay(idx);
-        }, (idx * secPerChord) * 1000);
-        this.scheduledEvents.push(timerId);
+        const uiId = Tone.Transport.schedule(t => {
+          Tone.Draw.schedule(() => {
+            if (this.isPlaying && !document.hidden) onChordPlay(idx);
+          }, t);
+        }, chordTime);
+        this.scheduledEvents.push(uiId);
       }
     });
 
     // Schedule End
     const totalDuration = allChords.length * secPerChord;
-    const endTimerId = setTimeout(() => {
+    const endId = Tone.Transport.schedule(t => {
       this.isPlaying = false;
-      if (onChordPlay && !document.hidden) onChordPlay(-1);
-    }, totalDuration * 1000);
-    this.scheduledEvents.push(endTimerId);
+      Tone.Draw.schedule(() => {
+        if (onChordPlay && !document.hidden) onChordPlay(-1);
+      }, t);
+      this.stopAll();
+    }, totalDuration);
+    this.scheduledEvents.push(endId);
+
+    Tone.Transport.bpm.value = bpm;
+    Tone.Transport.start();
 
     const stopFn = () => this.stopAll();
     this.currentStopFn = stopFn;
     return stopFn;
   }
 
-  /** Stop all playback */
+  /** Stop all playback immediately and clear all scheduled events */
   stopAll() {
-    this.scheduledEvents.forEach(id => clearTimeout(id));
+    this.scheduledEvents.forEach(id => Tone.Transport.clear(id));
     this.scheduledEvents = [];
+    Tone.Transport.stop();
+    Tone.Transport.cancel();
     if (this.synth) this.synth.releaseAll();
     this.isPlaying = false;
   }
