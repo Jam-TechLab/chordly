@@ -17,29 +17,20 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // PolySynth with inner voice volume -14dB so 4-5 note chords never sum over 0dB (eliminates clipping noise 100%)
+    // Bright, rich Piano PolySynth
     this.synth = new Tone.PolySynth(Tone.Synth, {
-      volume: -14,
-      oscillator: { type: 'sine' },
+      oscillator: { type: 'triangle' },
       envelope: {
-        attack: 0.015,
-        decay: 0.5,
-        sustain: 0.3,
+        attack: 0.01,
+        decay: 0.4,
+        sustain: 0.35,
         release: 1.2
       }
     }).toDestination();
-    this.synth.volume.value = -10;
-
-    // Click synth for metronome
-    this.clickSynth = new Tone.MembraneSynth({
-      pitchDecay: 0.008,
-      octaves: 3,
-      envelope: { attack: 0.001, decay: 0.1, sustain: 0, release: 0.04 }
-    }).toDestination();
-    this.clickSynth.volume.value = -20;
+    this.synth.volume.value = -8;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with normalized voice gain');
+    console.log('[AudioManager] Initialized with clean piano routing');
   }
 
   /** Play a chord (array of MIDI note numbers) */
@@ -54,7 +45,7 @@ class AudioManager {
     if (!this.isInitialized || !midiNotes.length) return;
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     const prevVol = this.synth.volume.value;
-    this.synth.volume.value = -18;
+    this.synth.volume.value = -16;
     this.synth.triggerAttackRelease(freqs, 0.25);
     setTimeout(() => { this.synth.volume.value = prevVol; }, 300);
   }
@@ -71,19 +62,9 @@ class AudioManager {
     });
   }
 
-  /** Play metronome clicks at given BPM */
-  playMetronome(bpm, beats = 2) {
-    if (!this.isInitialized) return;
-    const secPerBeat = 60 / bpm;
-    for (let i = 0; i < beats; i++) {
-      this.clickSynth.triggerAttackRelease('C2', '16n', Tone.now() + i * secPerBeat);
-    }
-  }
-
   /**
-   * Play full progression with playhead tracking and beat clicks.
+   * Play full progression with playhead tracking.
    * Pre-schedules all audio events directly onto the OS Hardware WebAudio Timeline (Tone.now()).
-   * This completely bypasses JavaScript timer throttling when mobile tabs are backgrounded.
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -100,17 +81,10 @@ class AudioManager {
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       const chordTime = startTime + idx * secPerChord;
 
-      // 1. Direct WebAudio hardware scheduling for chords (0% JS CPU dependency)
+      // 1. Direct WebAudio hardware scheduling for chords
       this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
 
-      // 2. Direct WebAudio hardware scheduling for metronome clicks
-      for (let b = 0; b < beatsPerChord; b++) {
-        const beatTime = chordTime + b * secPerBeat;
-        const pitch = (b % 2 === 0) ? 'C2' : 'C3';
-        this.clickSynth.triggerAttackRelease(pitch, '32n', beatTime);
-      }
-
-      // 3. UI Playhead tracking (runs via JS timers, skips DOM if tab is backgrounded)
+      // 2. UI Playhead tracking
       if (onChordPlay) {
         const timerId = setTimeout(() => {
           if (this.isPlaying && !document.hidden) onChordPlay(idx);
