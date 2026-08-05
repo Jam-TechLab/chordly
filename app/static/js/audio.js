@@ -8,6 +8,7 @@ class AudioManager {
     this.synth = null;
     this.isInitialized = false;
     this.isPlaying = false;
+    this.isMetronomeEnabled = false; // Default OFF to ensure 100% noise-free playback on mobile
     this.scheduledEvents = [];
     this.currentStopFn = null;
   }
@@ -94,16 +95,18 @@ class AudioManager {
       }, (idx * secPerChord) * 1000);
       this.scheduledEvents.push(timerId);
 
-      // 2. Play crisp, loud beat clicks (4 beats per chord measure)
-      for (let b = 0; b < beatsPerChord; b++) {
-        const beatOffset = (idx * secPerChord + b * secPerBeat) * 1000;
-        const pitch = (b === 0) ? 'G5' : 'C5'; // G5 accent on Beat 1, C5 on Beats 2,3,4
-        const beatTimerId = setTimeout(() => {
-          if (this.isPlaying) {
-            this.clickSynth.triggerAttackRelease(pitch, '32n');
-          }
-        }, beatOffset);
-        this.scheduledEvents.push(beatTimerId);
+      // 2. Play beat clicks ONLY if metronome is enabled
+      if (this.isMetronomeEnabled) {
+        for (let b = 0; b < beatsPerChord; b++) {
+          const beatOffset = (idx * secPerChord + b * secPerBeat) * 1000;
+          const pitch = (b === 0) ? 'G5' : 'C5';
+          const beatTimerId = setTimeout(() => {
+            if (this.isPlaying) {
+              this.clickSynth.triggerAttackRelease(pitch, '32n');
+            }
+          }, beatOffset);
+          this.scheduledEvents.push(beatTimerId);
+        }
       }
     });
 
