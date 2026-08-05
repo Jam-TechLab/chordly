@@ -15,30 +15,34 @@ class AudioManager {
   /** Initialize Tone.js — must be called after a user gesture */
   async init() {
     if (this.isInitialized) return;
+
+    // Mobile Web Audio Buffer Fix: Set latencyHint to 'playback' and lookAhead to 0.1s.
+    // On mobile devices (iOS Safari / Android Chrome), the default 'interactive' buffer (128 samples)
+    // starves mobile ARM CPUs, causing continuous hardware audio crackling. 'playback' expands the buffer.
+    Tone.setContext(new Tone.Context({
+      latencyHint: 'playback',
+      lookAhead: 0.1
+    }));
+
     await Tone.start();
+    if (Tone.context.state !== 'running') {
+      await Tone.context.resume();
+    }
 
-    // 1. Allocate massive 0.25s lookAhead buffer to give mobile CPUs maximum resource headroom
-    try {
-      Tone.context.lookAhead = 0.25;
-    } catch (e) {}
-
-    // 2. Gentle Lowpass Filter (4500Hz) to smooth high-frequency harmonics for mobile speakers
-    this.filter = new Tone.Filter(4500, 'lowpass').toDestination();
-
-    // 3. Bright, rich Piano PolySynth (Triangle wave)
+    // Bright, rich Piano PolySynth (Triangle wave)
     this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: {
-        attack: 0.03,
+        attack: 0.01,
         decay: 0.4,
-        sustain: 0.3,
-        release: 1.0
+        sustain: 0.35,
+        release: 1.2
       }
-    }).connect(this.filter);
-    this.synth.volume.value = -16; // Attenuate master volume so multi-note chords never exceed 0dB on mobile DACs
+    }).toDestination();
+    this.synth.volume.value = -8;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized with normalized mobile volume');
+    console.log('[AudioManager] Initialized with mobile playback buffer');
   }
 
   /** Play a chord (array of MIDI note numbers) */
@@ -72,7 +76,7 @@ class AudioManager {
 
   /**
    * Play full progression with playhead tracking.
-   * Uses Tone.Transport to ensure Stop immediately cancels future scheduled notes.
+   * Pre-schedules all audio events directly onto the OS Hardware WebAudio Timeline (Tone.now()).
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -82,53 +86,42 @@ class AudioManager {
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
+    const startTime = Tone.now() + 0.05; // WebAudio hardware clock baseline
+
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
-      const chordTime = idx * secPerChord;
+      const chordTime = startTime + idx * secPerChord;
 
-      // 1. Schedule chord sound
-      const eventId = Tone.Transport.schedule(t => {
-        this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, t);
-      }, chordTime);
-      this.scheduledEvents.push(eventId);
+      // 1. Direct WebAudio hardware scheduling for chords
+      this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
 
-      // 2. Schedule UI playhead update
+      // 2. UI Playhead tracking
       if (onChordPlay) {
-        const uiId = Tone.Transport.schedule(t => {
-          Tone.Draw.schedule(() => {
-            if (this.isPlaying && !document.hidden) onChordPlay(idx);
-          }, t);
-        }, chordTime);
-        this.scheduledEvents.push(uiId);
+        const timerId = setTimeout(() => {
+          if (this.isPlaying && !document.hidden) onChordPlay(idx);
+        }, (idx * secPerChord) * 1000);
+        this.scheduledEvents.push(timerId);
       }
     });
 
     // Schedule End
     const totalDuration = allChords.length * secPerChord;
-    const endId = Tone.Transport.schedule(t => {
+    const endTimerId = setTimeout(() => {
       this.isPlaying = false;
-      Tone.Draw.schedule(() => {
-        if (onChordPlay && !document.hidden) onChordPlay(-1);
-      }, t);
-      this.stopAll();
-    }, totalDuration);
-    this.scheduledEvents.push(endId);
-
-    Tone.Transport.bpm.value = bpm;
-    Tone.Transport.start();
+      if (onChordPlay && !document.hidden) onChordPlay(-1);
+    }, totalDuration * 1000);
+    this.scheduledEvents.push(endTimerId);
 
     const stopFn = () => this.stopAll();
     this.currentStopFn = stopFn;
     return stopFn;
   }
 
-  /** Stop all playback immediately and clear future scheduled events */
+  /** Stop all playback */
   stopAll() {
-    this.scheduledEvents.forEach(id => Tone.Transport.clear(id));
+    this.scheduledEvents.forEach(id => clearTimeout(id));
     this.scheduledEvents = [];
-    Tone.Transport.stop();
-    Tone.Transport.cancel();
     if (this.synth) this.synth.releaseAll();
     this.isPlaying = false;
   }
