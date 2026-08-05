@@ -17,20 +17,28 @@ class AudioManager {
     if (this.isInitialized) return;
     await Tone.start();
 
-    // Bright, rich Piano PolySynth (Triangle wave)
+    // 1. Allocate massive 0.25s lookAhead buffer to give mobile CPUs maximum resource headroom
+    try {
+      Tone.context.lookAhead = 0.25;
+    } catch (e) {}
+
+    // 2. Gentle Lowpass Filter (4500Hz) to smooth high-frequency harmonics for mobile speakers
+    this.filter = new Tone.Filter(4500, 'lowpass').toDestination();
+
+    // 3. Bright, rich Piano PolySynth (Triangle wave)
     this.synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: {
-        attack: 0.01,
+        attack: 0.015,
         decay: 0.4,
         sustain: 0.35,
         release: 1.2
       }
-    }).toDestination();
+    }).connect(this.filter);
     this.synth.volume.value = -8;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized successfully');
+    console.log('[AudioManager] Initialized with expanded 0.25s lookAhead buffer');
   }
 
   /** Play a chord (array of MIDI note numbers) */
