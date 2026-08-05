@@ -81,7 +81,8 @@ class AudioManager {
 
   /**
    * Play full progression with playhead tracking and beat clicks.
-   * Guarded against background tab CPU throttling on mobile browsers.
+   * Pre-schedules all audio events directly onto the OS Hardware WebAudio Timeline (Tone.now()).
+   * This completely bypasses JavaScript timer throttling when mobile tabs are backgrounded.
    */
   playProgression(allChords, bpm, beatsPerChord, onChordPlay) {
     if (!this.isInitialized) return () => {};
@@ -91,48 +92,39 @@ class AudioManager {
     const secPerBeat = 60 / bpm;
     const secPerChord = secPerBeat * beatsPerChord;
 
-    // Schedule each chord
+    const startTime = Tone.now() + 0.05; // WebAudio hardware clock baseline
+
     allChords.forEach((chordData, idx) => {
       const notes = chordEngine.getChordMidi(chordData.symbol);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
-      const chordTime = idx * secPerChord;
+      const chordTime = startTime + idx * secPerChord;
 
-      // Schedule audio synthesis on Web Audio timeline
-      Tone.Transport.schedule(t => {
-        this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, t);
-      }, chordTime);
+      // 1. Direct WebAudio hardware scheduling for chords (0% JS CPU dependency)
+      this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, chordTime);
 
-      // Schedule UI playhead update safely (skip DOM when tab is hidden)
-      if (onChordPlay) {
-        Tone.Transport.schedule(t => {
-          Tone.Draw.schedule(() => {
-            if (!document.hidden) onChordPlay(idx);
-          }, t);
-        }, chordTime);
-      }
-
-      // Schedule beat clicks
+      // 2. Direct WebAudio hardware scheduling for metronome clicks
       for (let b = 0; b < beatsPerChord; b++) {
         const beatTime = chordTime + b * secPerBeat;
         const pitch = (b % 2 === 0) ? 'C2' : 'C3';
-        Tone.Transport.schedule(t => {
-          this.clickSynth.triggerAttackRelease(pitch, '32n', t);
-        }, beatTime);
+        this.clickSynth.triggerAttackRelease(pitch, '32n', beatTime);
+      }
+
+      // 3. UI Playhead tracking (runs via JS timers, skips DOM if tab is backgrounded)
+      if (onChordPlay) {
+        const timerId = setTimeout(() => {
+          if (this.isPlaying && !document.hidden) onChordPlay(idx);
+        }, (idx * secPerChord) * 1000);
+        this.scheduledEvents.push(timerId);
       }
     });
 
-    // Schedule end
+    // Schedule End
     const totalDuration = allChords.length * secPerChord;
-    Tone.Transport.schedule(t => {
+    const endTimerId = setTimeout(() => {
       this.isPlaying = false;
-      Tone.Draw.schedule(() => {
-        if (onChordPlay) onChordPlay(-1);
-      }, t);
-      this.stopAll();
-    }, totalDuration);
-
-    Tone.Transport.bpm.value = bpm;
-    Tone.Transport.start();
+      if (onChordPlay && !document.hidden) onChordPlay(-1);
+    }, totalDuration * 1000);
+    this.scheduledEvents.push(endTimerId);
 
     const stopFn = () => this.stopAll();
     this.currentStopFn = stopFn;
@@ -141,10 +133,8 @@ class AudioManager {
 
   /** Stop all playback */
   stopAll() {
-    this.scheduledEvents.forEach(id => Tone.Transport.clear(id));
+    this.scheduledEvents.forEach(id => clearTimeout(id));
     this.scheduledEvents = [];
-    Tone.Transport.stop();
-    Tone.Transport.cancel();
     if (this.synth) this.synth.releaseAll();
     this.isPlaying = false;
   }
