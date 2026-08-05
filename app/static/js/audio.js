@@ -20,33 +20,35 @@ class AudioManager {
     // Master Limiter to prevent digital clipping
     this.limiter = new Tone.Limiter(-2).toDestination();
 
-    // Piano-like PolySynth
+    // PolySynth with maxPolyphony limit for mobile CPU optimization
     this.synth = new Tone.PolySynth(Tone.Synth, {
+      maxPolyphony: 6,
       oscillator: { type: 'triangle' },
       envelope: {
         attack: 0.01,
-        decay: 0.4,
+        decay: 0.35,
         sustain: 0.3,
-        release: 1.0
+        release: 0.35
       }
     }).connect(this.limiter);
     this.synth.volume.value = -10;
 
-    // Click synth for metronome
+    // Click synth for metronome (lightweight for mobile CPU)
     this.clickSynth = new Tone.MembraneSynth({
-      pitchDecay: 0.008,
-      octaves: 4,
-      envelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.05 }
+      pitchDecay: 0.005,
+      octaves: 2,
+      envelope: { attack: 0.001, decay: 0.08, sustain: 0, release: 0.03 }
     }).connect(this.limiter);
-    this.clickSynth.volume.value = -16;
+    this.clickSynth.volume.value = -18;
 
     this.isInitialized = true;
-    console.log('[AudioManager] Initialized');
+    console.log('[AudioManager] Initialized with mobile voice optimization');
   }
 
   /** Play a chord (array of MIDI note numbers) */
   playChord(midiNotes, duration = 0.8) {
     if (!this.isInitialized || !midiNotes.length) return;
+    this.synth.releaseAll();
     const freqs = midiNotes.map(m => Tone.Frequency(m, 'midi').toFrequency());
     this.synth.triggerAttackRelease(freqs, duration);
   }
@@ -68,7 +70,8 @@ class AudioManager {
       const notes = chordEngine.getChordMidi(sym);
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       setTimeout(() => {
-        this.synth.triggerAttackRelease(freqs, 0.5);
+        this.synth.releaseAll();
+        this.synth.triggerAttackRelease(freqs, 0.45);
       }, i * 500);
     });
   }
@@ -100,9 +103,10 @@ class AudioManager {
       const freqs = notes.map(m => Tone.Frequency(m, 'midi').toFrequency());
       const chordTime = idx * secPerChord;
 
-      // Schedule audio synthesis on Web Audio timeline
+      // Schedule audio synthesis on Web Audio timeline (release previous voices to prevent voice overload on mobile)
       Tone.Transport.schedule(t => {
-        this.synth.triggerAttackRelease(freqs, secPerChord * 0.9, t);
+        this.synth.releaseAll(t);
+        this.synth.triggerAttackRelease(freqs, secPerChord * 0.85, t);
       }, chordTime);
 
       // Schedule UI playhead update safely (skip DOM when tab is hidden)
