@@ -106,11 +106,19 @@ class AudioManager {
     return stopFn;
   }
 
-  /** Stop all playback */
+  /** Stop all playback immediately — halts current note and silences future scheduled notes */
   stopAll() {
     this.scheduledEvents.forEach(id => clearTimeout(id));
     this.scheduledEvents = [];
-    if (this.synth) this.synth.releaseAll();
+    if (this.synth) {
+      this.synth.releaseAll();
+      try {
+        const now = Tone.now();
+        this.synth.volume.cancelScheduledValues(now);
+        this.synth.volume.setValueAtTime(-Infinity, now);
+        this.synth.volume.setValueAtTime(-8, now + 0.05);
+      } catch (e) {}
+    }
     this.isPlaying = false;
   }
 
