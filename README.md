@@ -44,7 +44,7 @@
 
 1. **リポジトリのクローン**
    ```bash
-   git clone https://github.com/YOUR_GITHUB_USERNAME/chordly.git
+   git clone https://github.com/Jam-TechLab/chordly.git
    cd chordly
    ```
 
