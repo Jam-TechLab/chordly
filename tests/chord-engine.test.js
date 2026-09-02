@@ -81,4 +81,59 @@ const passingToneResult = engine.harmonizeWithMelody(
 );
 assert.ok(engine.getChordPitchClasses(passingToneResult.chords[0]).includes(0));
 
-console.log('Chord engine melody tests passed');
+// Template-only generation must not cadence every time a four-chord pattern
+// happens to end. At the default two-beat width, strong arrivals belong at
+// four-measure boundaries and the section ending.
+const overCadenced = ['G', 'C', 'F', 'G', 'C', 'F', 'G', 'C'];
+const structurallyRefined = engine.refineProgressionStructure(
+  overCadenced, 'C', 'major', 'bright', null, 8
+);
+const refinedArrivals = Array.from(structurallyRefined)
+  .map((chord, index) => index > 0
+    && engine.isTonicArrival(structurallyRefined[index - 1], chord, 'C')
+    ? index
+    : -1)
+  .filter(index => index >= 0);
+assert.deepEqual(refinedArrivals, [7]);
+assert.ok(structurallyRefined.every((chord, index) =>
+  index === 0 || !engine.hasSameChordRoot(chord, structurallyRefined[index - 1])
+));
+
+// A five-measure section is too short for separate arrivals at measure four
+// and measure five: keep the real section ending and weaken the earlier one.
+const shortTail = ['C', 'F', 'Am', 'G', 'C', 'F', 'G', 'C', 'G', 'C'];
+const shortTailRefined = engine.refineProgressionStructure(
+  shortTail, 'C', 'major', 'pop', null, 8
+);
+const shortTailArrivals = Array.from(shortTailRefined)
+  .map((chord, index) => index > 0
+    && engine.isTonicArrival(shortTailRefined[index - 1], chord, 'C')
+    ? index
+    : -1)
+  .filter(index => index >= 0);
+assert.deepEqual(shortTailArrivals, [9]);
+
+// Exercise randomized no-MIDI generation repeatedly. Every clear arrival is
+// either at the requested phrase boundary or at the section ending.
+for (const phraseLength of [4, 8, 16]) {
+  for (let iteration = 0; iteration < 40; iteration++) {
+    const generated = engine.generateProgression(
+      'C', 'major', 'verse', 'bright', phraseLength * 2, null, phraseLength
+    );
+    generated.forEach((chord, index) => {
+      if (index === 0) return;
+      assert.ok(!engine.hasSameChordRoot(chord, generated[index - 1]));
+      if (engine.isTonicArrival(generated[index - 1], chord, 'C')) {
+        assert.ok((index + 1) % phraseLength === 0 || index === generated.length - 1);
+      }
+    });
+  }
+}
+
+const sectionLeadIn = engine.refineProgressionStructure(
+  ['C', 'F', 'G', 'C'], 'C', 'major', 'bright', 'C', 8
+);
+assert.equal(sectionLeadIn.at(-1), 'G7');
+assert.ok(!engine.hasSameChordRoot(sectionLeadIn.at(-2), sectionLeadIn.at(-1)));
+
+console.log('Chord engine melody and structure tests passed');

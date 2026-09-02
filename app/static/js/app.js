@@ -167,6 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const beatsPerMeasure = state.songData.timeSignature[0];
     const chordsPerMeasure = beatsPerMeasure / state.songData.chordDurationBeats;
     const numChords = Math.round(sec.measures * chordsPerMeasure);
+    const phraseLengthChords = Math.max(2, Math.round(chordsPerMeasure * 4));
 
     const nextSec = state.songData.sections[sIdx + 1];
     let nextFirstChord = null;
@@ -178,7 +179,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     sec.chords = chordEngine.generateProgression(
-      sec.key, sec.mode, sec.type, sec.image, numChords, nextFirstChord
+      sec.key, sec.mode, sec.type, sec.image, numChords,
+      nextFirstChord, phraseLengthChords
     );
 
     harmonizeSectionWithMelody(state.songData, sIdx);
@@ -605,6 +607,7 @@ function generateAndRender() {
     const beatsPerMeasure = config.timeSignature[0];
     const chordsPerMeasure = beatsPerMeasure / config.chordDurationBeats;
     const numChords = Math.round(sec.measures * chordsPerMeasure);
+    const phraseLengthChords = Math.max(2, Math.round(chordsPerMeasure * 4));
 
     const nextSec = config.sections[idx + 1];
     let nextFirstChord = null;
@@ -616,7 +619,8 @@ function generateAndRender() {
     }
 
     sec.chords = chordEngine.generateProgression(
-      sec.key, sec.mode, sec.type, sec.image, numChords, nextFirstChord
+      sec.key, sec.mode, sec.type, sec.image, numChords,
+      nextFirstChord, phraseLengthChords
     );
   });
 
@@ -637,6 +641,7 @@ function regenerateChords() {
     const beatsPerMeasure = state.songData.timeSignature[0];
     const chordsPerMeasure = beatsPerMeasure / state.songData.chordDurationBeats;
     const numChords = Math.round(sec.measures * chordsPerMeasure);
+    const phraseLengthChords = Math.max(2, Math.round(chordsPerMeasure * 4));
 
     const nextSec = state.songData.sections[idx + 1];
     let nextFirstChord = null;
@@ -648,7 +653,8 @@ function regenerateChords() {
     }
 
     sec.chords = chordEngine.generateProgression(
-      sec.key, sec.mode, sec.type, sec.image, numChords, nextFirstChord
+      sec.key, sec.mode, sec.type, sec.image, numChords,
+      nextFirstChord, phraseLengthChords
     );
   });
   applyMelodyHarmony(state.songData);

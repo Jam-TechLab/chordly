@@ -735,7 +735,10 @@ class ChordEngine {
    * Generate a chord progression for a section using authentic masterpiece templates.
    * Prioritizes Mood (imageType) to ensure distinctive progression signatures.
    */
-  generateProgression(key, mode, sectionType, imageType, numChords, nextFirstChord = null) {
+  generateProgression(
+    key, mode, sectionType, imageType, numChords,
+    nextFirstChord = null, phraseLengthChords = 8
+  ) {
     const d = this.getDiatonicChords(key, mode);
 
     // Secondary dominant of vi (III7, e.g. E7 in C major for Just the Two of Us)
@@ -842,7 +845,131 @@ class ChordEngine {
     // Apply image-based modifications
     prog = prog.map(c => this._applyImage(c, imageType));
 
-    return prog;
+    return this.refineProgressionStructure(
+      prog, key, mode, imageType, nextFirstChord, phraseLengthChords
+    );
+  }
+
+  /** True when a chord pair creates a clear tonal arrival on the home tonic. */
+  isTonicArrival(fromChord, toChord, key) {
+    const from = this.parseChord(fromChord);
+    const to = this.parseChord(toChord);
+    if (!from || !to) return false;
+    const tonicPc = this.noteMap[key];
+    const fromPc = this.noteMap[from.root];
+    const toPc = this.noteMap[to.root];
+    if (tonicPc === undefined || fromPc === undefined || toPc === undefined) return false;
+    if (toPc !== tonicPc) return false;
+
+    const relativeRoot = (fromPc - tonicPc + 12) % 12;
+    return relativeRoot === 7       // V -> I
+      || relativeRoot === 5        // IV -> I
+      || (from.type === '7' && (toPc - fromPc + 12) % 12 === 5);
+  }
+
+  /** Extensions do not make two consecutive chords harmonically different. */
+  hasSameChordRoot(firstChord, secondChord) {
+    const first = this.parseChord(firstChord);
+    const second = this.parseChord(secondChord);
+    return Boolean(first && second && first.root === second.root);
+  }
+
+  /** Pick a forward-moving chord when a template boundary creates another rest point. */
+  structuralDeparture(previousChord, key, mode, mood) {
+    const diatonic = this.getDiatonicChords(key, mode);
+    const previousFunction = this.harmonicFunction(previousChord, key, mode);
+
+    if (previousFunction === 'tonic') {
+      if (mood === 'jazzy') return diatonic[1];
+      if (mood === 'dark' || mood === 'cinematic') return diatonic[3];
+      return diatonic[3];
+    }
+    if (previousFunction === 'predominant') return diatonic[4];
+    if (previousFunction === 'dominant') return diatonic[5] || diatonic[3];
+    return diatonic[3];
+  }
+
+  /**
+   * Phrase-level cleanup for template generation.
+   * Clear arrivals are reserved for four-measure boundaries and the section
+   * ending. A new phrase must depart after arrival instead of landing on the
+   * tonic again.
+   */
+  refineProgressionStructure(
+    progression, key, mode, mood,
+    nextFirstChord = null, phraseLengthChords = 8
+  ) {
+    if (!progression || progression.length < 2) return progression || [];
+
+    const refined = [...progression];
+    const diatonic = this.getDiatonicChords(key, mode);
+    const tonicPc = this.noteMap[key] ?? 0;
+    const dominant = mode === 'minor'
+      ? `${this.pcToNote[(tonicPc + 7) % 12]}7`
+      : diatonic[4];
+    const phraseLength = Math.max(2, Math.round(phraseLengthChords || 8));
+    const minimumArrivalGap = Math.max(2, Math.ceil(phraseLength / 2));
+    let lastArrival = -Infinity;
+
+    for (let index = 1; index < refined.length; index++) {
+      const isSectionEnd = index === refined.length - 1;
+      const isPhraseEnd = (index + 1) % phraseLength === 0;
+      // If the section ends less than two measures later, save the stronger
+      // arrival for the true ending instead of resolving twice in quick succession.
+      const leavesRoomForEnding = refined.length - 1 - index >= minimumArrivalGap;
+      const arrivalAllowed = isSectionEnd || (isPhraseEnd && leavesRoomForEnding);
+
+      // Repeated tonic at an intended ending becomes one proper V-I cadence.
+      if (this.hasSameChordRoot(refined[index], refined[index - 1])) {
+        const currentRoot = this.parseChord(refined[index])?.root;
+        const currentPc = this.noteMap[currentRoot];
+        if (arrivalAllowed && currentPc === tonicPc) {
+          refined[index - 1] = dominant;
+        } else {
+          refined[index] = this.structuralDeparture(refined[index - 1], key, mode, mood);
+        }
+      }
+
+      const arrival = this.isTonicArrival(refined[index - 1], refined[index], key);
+      if (arrival && (!arrivalAllowed || index - lastArrival < minimumArrivalGap)) {
+        // Keep harmonic motion alive instead of resolving prematurely.
+        refined[index] = this.structuralDeparture(refined[index - 1], key, mode, mood);
+      } else if (arrival) {
+        lastArrival = index;
+      }
+
+      // The chord immediately after a cadence must leave the tonic area.
+      if (index >= 2 && this.isTonicArrival(refined[index - 2], refined[index - 1], key)) {
+        if (this.harmonicFunction(refined[index], key, mode) === 'tonic') {
+          refined[index] = this.structuralDeparture(refined[index - 1], key, mode, mood);
+        }
+      }
+
+      // A replacement can itself duplicate the preceding chord; resolve once.
+      if (this.hasSameChordRoot(refined[index], refined[index - 1])) {
+        refined[index] = this.structuralDeparture(refined[index - 1], key, mode, mood);
+      }
+    }
+
+    // Do not hold the same root across a section boundary. Turn the current
+    // ending into V7 of the next root so the one arrival happens on the next
+    // section's first chord.
+    if (nextFirstChord && refined.length >= 2) {
+      const finalIndex = refined.length - 1;
+      if (this.hasSameChordRoot(refined[finalIndex], nextFirstChord)) {
+        const nextRoot = this.parseChord(nextFirstChord)?.root;
+        const nextRootPc = this.noteMap[nextRoot];
+        if (nextRootPc !== undefined) {
+          const transitionDominant = `${this.pcToNote[(nextRootPc + 7) % 12]}7`;
+          refined[finalIndex] = transitionDominant;
+          if (this.hasSameChordRoot(refined[finalIndex - 1], transitionDominant)) {
+            refined[finalIndex - 1] = diatonic[3];
+          }
+        }
+      }
+    }
+
+    return refined;
   }
 
   /** Apply image/mood modifier to a chord — conservative for most moods */
