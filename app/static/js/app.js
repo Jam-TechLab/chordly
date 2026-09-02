@@ -304,6 +304,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Plain-text chord chart download — easy to paste into notes, chats, or a DAW project.
+  document.getElementById('btn-download-text').addEventListener('click', () => {
+    if (!state.songData) return;
+
+    const text = buildChordChartText();
+    downloadBlob(
+      new Blob([text], { type: 'text/plain;charset=utf-8' }),
+      'chordly_chord_chart.txt'
+    );
+  });
+
   // MusicXML download
   document.getElementById('btn-download-xml').addEventListener('click', async () => {
     if (!state.songData) return;
@@ -465,6 +476,25 @@ function buildExportData() {
       chords: sec.chords,
     }))
   };
+}
+
+function buildChordChartText() {
+  const { tempo, timeSignature, chordDurationBeats, sections } = state.songData;
+  const lines = [
+    'Chordly コード進行',
+    `BPM: ${tempo} | 拍子: ${timeSignature.join('/')} | コード幅: ${chordDurationBeats}拍`,
+    ''
+  ];
+
+  sections.forEach(section => {
+    const sectionName = chordEngine.sectionNames[section.type] || section.type;
+    const mode = section.mode === 'minor' ? 'Minor' : 'Major';
+    lines.push(`[${sectionName} | ${section.key} ${mode}]`);
+    lines.push(section.chords.join('  |  '));
+    lines.push('');
+  });
+
+  return lines.join('\n');
 }
 
 function downloadBlob(blob, filename) {

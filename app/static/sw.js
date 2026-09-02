@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chordly-v2';
+const CACHE_NAME = 'chordly-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/static/css/style.css',
