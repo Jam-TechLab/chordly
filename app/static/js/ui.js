@@ -241,6 +241,7 @@ class UIManager {
         if (insight) {
           block.title = [
             `旋律適合 ${Math.round(insight.melodyFit * 100)}%`,
+            `強拍主音 ${insight.anchorFit >= 1 ? 'コードトーン' : '非コードトーン'}`,
             `声部移動 ${Math.round(insight.voiceLeading * 100)}%`,
             `調内性 ${Math.round(insight.theoryFit * 100)}%`,
             insight.changedFromTemplate ? 'テンプレートから再選択' : 'テンプレートを維持'

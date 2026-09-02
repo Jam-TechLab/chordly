@@ -528,7 +528,11 @@ function updateMelodyHeader() {
   if (!badge) return;
   if (state.melody) {
     badge.style.display = '';
-    badge.textContent = `🎤 ${state.melody.trackName} · ${state.melody.notes.length}音`;
+    const detected = state.melody.detectedKey;
+    const keyLabel = detected
+      ? ` · ${detected.key} ${detected.mode === 'minor' ? 'Minor' : 'Major'}`
+      : '';
+    badge.textContent = `🎤 ${state.melody.trackName} · ${state.melody.notes.length}音${keyLabel}`;
   } else {
     badge.style.display = 'none';
     badge.textContent = '';
@@ -577,12 +581,19 @@ function getMelodyNotesForChord(sectionIndex, chordIndex) {
 function generateAndRender() {
   const config = uiManager.getSongConfig();
 
+  if (state.melody) {
+    state.melody.detectedKey = chordEngine.detectKeyFromMelody(state.melody.notes);
+  }
+
   // Resolve auto keys/modes
   const hasAutoKey = config.sections.some(s => s.key === 'auto');
   const hasAutoMode = config.sections.some(s => s.mode === 'auto');
 
   if (hasAutoKey || hasAutoMode) {
-    const autoKeys = chordEngine.autoSelectKeysForSong(config.sections);
+    const autoKeys = chordEngine.autoSelectKeysForSong(
+      config.sections,
+      state.melody?.notes || []
+    );
 
     config.sections.forEach((sec, idx) => {
       if (sec.key === 'auto') sec.key = autoKeys[idx].key;
@@ -612,6 +623,12 @@ function generateAndRender() {
   applyMelodyHarmony(config);
 
   state.songData = config;
+  if (state.melody?.detectedKey) {
+    const detected = state.melody.detectedKey;
+    const status = document.getElementById('melody-import-status');
+    status.textContent = `${state.melody.trackName}：${state.melody.notes.length}音 / 推定 ${detected.key} ${detected.mode === 'minor' ? 'Minor' : 'Major'}`;
+    updateMelodyHeader();
+  }
   uiManager.renderEditor(state.songData);
 }
 

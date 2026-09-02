@@ -168,8 +168,11 @@ class ChordEngine {
    * - Minor sections use Home Relative Minor Key (e.g., C# / Db Minor), NOT parallel minor (E minor).
    * - Avoids unmotivated random key changes; progression and atmosphere take priority.
    */
-  autoSelectKeysForSong(sections) {
+  autoSelectKeysForSong(sections, melodyNotes = []) {
     if (sections.length === 0) return [];
+    const detectedKey = melodyNotes.length
+      ? this.detectKeyFromMelody(melodyNotes)
+      : null;
 
     // 1. Check if user explicitly set a key for any section
     let explicitKey = null;
@@ -177,7 +180,9 @@ class ChordEngine {
     for (const sec of sections) {
       if (sec.key && sec.key !== 'auto') {
         explicitKey = sec.key;
-        explicitMode = sec.mode !== 'auto' ? sec.mode : 'major';
+        explicitMode = sec.mode !== 'auto'
+          ? sec.mode
+          : (detectedKey?.mode || 'major');
         break;
       }
     }
@@ -186,7 +191,15 @@ class ChordEngine {
     let homeMajorKey = 'C';
     let homeMinorKey = 'A';
 
-    if (explicitKey) {
+    if (!explicitKey && detectedKey) {
+      if (detectedKey.mode === 'minor') {
+        homeMinorKey = detectedKey.key;
+        homeMajorKey = this.getRelativeMajor(detectedKey.key);
+      } else {
+        homeMajorKey = detectedKey.key;
+        homeMinorKey = this.getRelativeMinor(detectedKey.key);
+      }
+    } else if (explicitKey) {
       if (explicitMode === 'minor') {
         homeMinorKey = explicitKey;
         homeMajorKey = this.getRelativeMajor(explicitKey);
@@ -210,7 +223,7 @@ class ChordEngine {
         let secMode = sec.mode;
         if (!secMode || secMode === 'auto') {
           const moodDef = this.moods[sec.image] || this.moods['bright'];
-          secMode = moodDef.defaultMode;
+          secMode = detectedKey ? detectedKey.mode : moodDef.defaultMode;
         }
         return { key: sec.key, mode: secMode };
       }
@@ -219,7 +232,7 @@ class ChordEngine {
       const moodDef = this.moods[sec.image] || this.moods['bright'];
       let targetMode = sec.mode;
       if (!targetMode || targetMode === 'auto') {
-        targetMode = moodDef.defaultMode;
+        targetMode = detectedKey ? detectedKey.mode : moodDef.defaultMode;
       }
 
       // Assign: Major -> Home Major, Minor -> Relative Minor
@@ -229,6 +242,56 @@ class ChordEngine {
         return { key: homeMajorKey, mode: 'major' };
       }
     });
+  }
+
+  /** Infer one of 24 major/minor keys from duration-weighted melody pitch classes. */
+  detectKeyFromMelody(melodyNotes) {
+    if (!melodyNotes || melodyNotes.length === 0) {
+      return { key: 'C', mode: 'major', confidence: 0 };
+    }
+
+    // Krumhansl-Schmuckler tonal profiles, rotated through all tonics.
+    const majorProfile = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+    const minorProfile = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+    const histogram = Array(12).fill(0);
+    const sortedNotes = [...melodyNotes].sort((a, b) => a.beat - b.beat);
+
+    sortedNotes.forEach((note, index) => {
+      const pc = ((note.midi % 12) + 12) % 12;
+      let weight = Math.sqrt(Math.max(note.durationBeats || 0.25, 0.1));
+      if (Math.abs(note.beat - Math.round(note.beat)) < 0.08) weight *= 1.25;
+      if (index === 0 || index === sortedNotes.length - 1) weight *= 1.2;
+      histogram[pc] += weight * Math.max(0.4, note.velocity || 0.7);
+    });
+
+    const candidates = [];
+    for (let tonic = 0; tonic < 12; tonic++) {
+      [['major', majorProfile], ['minor', minorProfile]].forEach(([mode, profile]) => {
+        let score = 0;
+        for (let pc = 0; pc < 12; pc++) {
+          score += histogram[pc] * profile[(pc - tonic + 12) % 12];
+        }
+
+        const firstPc = ((sortedNotes[0].midi % 12) + 12) % 12;
+        const lastPc = ((sortedNotes[sortedNotes.length - 1].midi % 12) + 12) % 12;
+        if (firstPc === tonic) score *= 1.035;
+        if (lastPc === tonic) score *= 1.08;
+        if (lastPc === (tonic + 7) % 12) score *= 1.025;
+        candidates.push({ tonic, mode, score });
+      });
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0];
+    const runnerUp = candidates[1];
+    const confidence = best.score > 0
+      ? Math.max(0, Math.min(1, (best.score - runnerUp.score) / best.score * 4))
+      : 0;
+    return {
+      key: this.pcToNote[best.tonic],
+      mode: best.mode,
+      confidence
+    };
   }
 
   // ==========================================
@@ -367,6 +430,20 @@ class ChordEngine {
     const diatonic = this.getDiatonicChords(key, mode);
     const candidates = [baseChord, ...diatonic];
 
+    // Seventh/add-note variants let a sustained melody note become a real
+    // chord tone instead of being treated as a generic non-chord tone.
+    diatonic.forEach(symbol => {
+      const parsed = this.parseChord(symbol);
+      if (!parsed) return;
+      if (parsed.type === '') {
+        candidates.push(`${parsed.root}maj7`, `${parsed.root}add9`, `${parsed.root}6`);
+      } else if (parsed.type === 'm') {
+        candidates.push(`${parsed.root}m7`, `${parsed.root}m9`);
+      } else if (parsed.type === 'dim') {
+        candidates.push(`${parsed.root}m7b5`);
+      }
+    });
+
     if (mode === 'major') {
       candidates.push(
         `${this.pcToNote[(tonicPc + 5) % 12]}m`,  // borrowed iv
@@ -404,7 +481,10 @@ class ChordEngine {
       const pc = ((note.midi % 12) + 12) % 12;
       const beatFraction = Math.abs(note.beat - Math.round(note.beat));
       const strongBeatWeight = beatFraction < 0.08 ? 1.35 : 1;
-      const weight = strongBeatWeight * Math.max(0.35, note.velocity || 0.7);
+      const roleWeight = note.importance || 1;
+      const durationWeight = Math.sqrt(Math.max(note.overlapBeats || note.durationBeats || 0.25, 0.1));
+      const weight = strongBeatWeight * roleWeight * durationWeight
+        * Math.max(0.35, note.velocity || 0.7);
 
       let fit = 0.15;
       if (chordPcs.has(pc)) {
@@ -460,62 +540,188 @@ class ChordEngine {
     return targets[mood] ?? 0.5;
   }
 
+  harmonicFunction(chordSymbol, key, mode) {
+    const parsed = this.parseChord(chordSymbol);
+    if (!parsed || this.noteMap[parsed.root] === undefined) return 'chromatic';
+    const tonic = this.noteMap[key] || 0;
+    const degree = (this.noteMap[parsed.root] - tonic + 12) % 12;
+
+    if (mode === 'minor') {
+      if ([0, 3, 8].includes(degree)) return 'tonic';
+      if ([2, 5].includes(degree)) return 'predominant';
+      if ([7, 10, 11].includes(degree)) return 'dominant';
+    } else {
+      if ([0, 4, 9].includes(degree)) return 'tonic';
+      if ([2, 5].includes(degree)) return 'predominant';
+      if ([7, 11].includes(degree)) return 'dominant';
+    }
+    return parsed.type === '7' ? 'dominant' : 'chromatic';
+  }
+
+  harmonicTransitionScore(fromChord, toChord, key, mode) {
+    if (!fromChord) return 0.7;
+    const fromFunction = this.harmonicFunction(fromChord, key, mode);
+    const toFunction = this.harmonicFunction(toChord, key, mode);
+    const functionScores = {
+      tonic: { tonic: 0.62, predominant: 0.95, dominant: 0.78, chromatic: 0.55 },
+      predominant: { tonic: 0.62, predominant: 0.48, dominant: 1, chromatic: 0.55 },
+      dominant: { tonic: 1, predominant: 0.25, dominant: 0.42, chromatic: 0.45 },
+      chromatic: { tonic: 0.82, predominant: 0.58, dominant: 0.72, chromatic: 0.38 }
+    };
+
+    const parsedFrom = this.parseChord(fromChord);
+    const parsedTo = this.parseChord(toChord);
+    const fromPc = this.noteMap[parsedFrom?.root];
+    const toPc = this.noteMap[parsedTo?.root];
+    let rootMotion = 0.5;
+    if (fromPc !== undefined && toPc !== undefined) {
+      const distance = Math.min(Math.abs(fromPc - toPc), 12 - Math.abs(fromPc - toPc));
+      rootMotion = ({ 0: 0.28, 1: 0.48, 2: 0.64, 3: 0.58, 4: 0.62, 5: 1, 6: 0.2 })[distance] ?? 1;
+      // A dominant seventh resolving down a fifth gets an explicit resolution bonus.
+      if (parsedFrom.type === '7' && (toPc - fromPc + 12) % 12 === 5) rootMotion = 1;
+    }
+
+    const functionFit = functionScores[fromFunction]?.[toFunction] ?? 0.5;
+    const voiceLeading = this.voiceLeadingScore(fromChord, toChord);
+    return voiceLeading * 0.48 + functionFit * 0.37 + rootMotion * 0.15;
+  }
+
   /**
    * Re-rank generated chords against an imported melody without requiring a
    * training database. Returns both the chosen chords and explainable scores.
    */
   harmonizeWithMelody(baseProgression, melodyNotes, sectionStartBeat,
                        beatsPerChord, key, mode, mood) {
+    if (!baseProgression || baseProgression.length === 0) {
+      return { chords: [], insights: [] };
+    }
     if (!melodyNotes || melodyNotes.length === 0) {
       return { chords: [...baseProgression], insights: [] };
     }
 
     const diatonic = new Set(this.getDiatonicChords(key, mode));
+    const tonicPc = this.noteMap[key] || 0;
     const targetTension = this.moodTensionTarget(mood);
-    const chords = [];
-    const insights = [];
-    let previousChord = null;
+    const sortedMelody = [...melodyNotes].sort((a, b) => a.beat - b.beat);
 
-    baseProgression.forEach((baseChord, index) => {
+    const slots = baseProgression.map((baseChord, index) => {
       const slotStart = sectionStartBeat + index * beatsPerChord;
       const slotEnd = slotStart + beatsPerChord;
-      const slotNotes = melodyNotes.filter(note => {
+      const slotNotes = sortedMelody.filter(note => {
         const noteEnd = note.beat + Math.max(note.durationBeats || 0, 0.05);
         return note.beat < slotEnd && noteEnd > slotStart;
+      }).map(note => {
+        const melodyIndex = sortedMelody.indexOf(note);
+        const previous = sortedMelody[melodyIndex - 1];
+        const next = sortedMelody[melodyIndex + 1];
+        const previousStep = previous ? note.midi - previous.midi : 0;
+        const nextStep = next ? next.midi - note.midi : 0;
+        const isPassing = previous && next
+          && Math.abs(previousStep) <= 2
+          && Math.abs(nextStep) <= 2
+          && Math.sign(previousStep) === Math.sign(nextStep);
+        const startsSlot = Math.abs(note.beat - slotStart) < 0.08;
+        const startsBeat = Math.abs(note.beat - Math.round(note.beat)) < 0.08;
+        const noteEnd = note.beat + Math.max(note.durationBeats || 0, 0.05);
+        const overlapBeats = Math.max(0, Math.min(noteEnd, slotEnd) - Math.max(note.beat, slotStart));
+        return {
+          ...note,
+          overlapBeats,
+          importance: startsSlot ? 2.2 : startsBeat ? 1.35 : isPassing ? 0.42 : 0.8
+        };
       });
 
-      if (!slotNotes.length) {
-        chords.push(baseChord);
-        insights.push(null);
-        previousChord = baseChord;
-        return;
-      }
-
-      const ranked = this.getHarmonyCandidates(baseChord, key, mode).map(candidate => {
+      const candidates = this.getHarmonyCandidates(baseChord, key, mode).map(candidate => {
         const melodyFit = this.melodyCompatibility(candidate, slotNotes, key, mode);
-        const voiceLeading = this.voiceLeadingScore(previousChord, candidate);
         const theoryFit = diatonic.has(candidate) ? 1 : 0.62;
         const moodFit = 1 - Math.abs(this.chordTension(candidate) - targetTension);
         const templateFit = candidate === baseChord ? 1 : 0.45;
-        const score = melodyFit * 0.52
-          + voiceLeading * 0.20
-          + theoryFit * 0.12
-          + moodFit * 0.08
-          + templateFit * 0.08;
+        const anchorNote = slotNotes.reduce((best, note) => {
+          const strength = note.importance * Math.max(note.overlapBeats, 0.1);
+          return !best || strength > best.strength ? { note, strength } : best;
+        }, null);
+        const chordPcs = new Set(this.getChordPitchClasses(candidate));
+        const anchorFit = anchorNote
+          ? (chordPcs.has(((anchorNote.note.midi % 12) + 12) % 12) ? 1 : 0)
+          : 0.5;
 
-        return { candidate, score, melodyFit, voiceLeading, theoryFit, moodFit };
-      }).sort((a, b) => b.score - a.score);
+        let unaryScore;
+        if (slotNotes.length) {
+          unaryScore = melodyFit * 0.42
+            + anchorFit * 0.18
+            + theoryFit * 0.12
+            + moodFit * 0.08
+            + templateFit * 0.10;
+        } else {
+          unaryScore = theoryFit * 0.18 + moodFit * 0.12 + templateFit * 0.60;
+        }
 
-      const best = ranked[0];
-      chords.push(best.candidate);
-      insights.push({
-        melodyFit: best.melodyFit,
-        voiceLeading: best.voiceLeading,
-        theoryFit: best.theoryFit,
-        moodFit: best.moodFit,
-        changedFromTemplate: best.candidate !== baseChord
+        const candidateRoot = this.noteMap[this.parseChord(candidate)?.root];
+        if (index === baseProgression.length - 1 && candidateRoot === tonicPc) {
+          unaryScore += 0.09;
+        }
+
+        return { candidate, unaryScore, melodyFit, anchorFit, theoryFit, moodFit };
       });
-      previousChord = best.candidate;
+
+      return { baseChord, slotNotes, candidates };
+    });
+
+    // Viterbi-style dynamic programming: optimize the full section instead of
+    // making isolated greedy choices at each chord slot.
+    const paths = [];
+    paths[0] = slots[0].candidates.map(candidate => ({
+      total: candidate.unaryScore,
+      previousIndex: -1
+    }));
+
+    for (let index = 1; index < slots.length; index++) {
+      paths[index] = slots[index].candidates.map(candidate => {
+        let bestTotal = -Infinity;
+        let bestPreviousIndex = 0;
+        slots[index - 1].candidates.forEach((previous, previousIndex) => {
+          const transition = this.harmonicTransitionScore(
+            previous.candidate, candidate.candidate, key, mode
+          );
+          const repeatPenalty = previous.candidate === candidate.candidate ? 0.16 : 0;
+          const total = paths[index - 1][previousIndex].total
+            + candidate.unaryScore
+            + transition * 0.28
+            - repeatPenalty;
+          if (total > bestTotal) {
+            bestTotal = total;
+            bestPreviousIndex = previousIndex;
+          }
+        });
+        return { total: bestTotal, previousIndex: bestPreviousIndex };
+      });
+    }
+
+    const chosenIndices = Array(slots.length).fill(0);
+    const finalPath = paths[paths.length - 1];
+    chosenIndices[chosenIndices.length - 1] = finalPath.reduce(
+      (bestIndex, entry, index) => entry.total > finalPath[bestIndex].total ? index : bestIndex,
+      0
+    );
+    for (let index = chosenIndices.length - 1; index > 0; index--) {
+      chosenIndices[index - 1] = paths[index][chosenIndices[index]].previousIndex;
+    }
+
+    const chords = chosenIndices.map((candidateIndex, slotIndex) =>
+      slots[slotIndex].candidates[candidateIndex].candidate
+    );
+    const insights = chosenIndices.map((candidateIndex, slotIndex) => {
+      if (!slots[slotIndex].slotNotes.length) return null;
+      const selected = slots[slotIndex].candidates[candidateIndex];
+      const previousChord = slotIndex > 0 ? chords[slotIndex - 1] : null;
+      return {
+        melodyFit: selected.melodyFit,
+        anchorFit: selected.anchorFit,
+        voiceLeading: this.voiceLeadingScore(previousChord, selected.candidate),
+        theoryFit: selected.theoryFit,
+        moodFit: selected.moodFit,
+        changedFromTemplate: selected.candidate !== slots[slotIndex].baseChord
+      };
     });
 
     return { chords, insights };
