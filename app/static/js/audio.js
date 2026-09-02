@@ -66,6 +66,32 @@ class AudioManager {
     });
   }
 
+  /** Preview an imported MIDI melody whose timing is expressed in beats. */
+  playMelody(melodyNotes, bpm = 120) {
+    if (!this.isInitialized || !melodyNotes || !melodyNotes.length) return;
+    this.stopAll();
+    this.isPlaying = true;
+
+    const secondsPerBeat = 60 / bpm;
+    const firstBeat = Math.min(...melodyNotes.map(note => note.beat));
+    const startTime = Tone.now() + 0.05;
+
+    melodyNotes.forEach(note => {
+      const when = startTime + (note.beat - firstBeat) * secondsPerBeat;
+      const duration = Math.max(0.08, (note.durationBeats || 0.25) * secondsPerBeat * 0.9);
+      const frequency = Tone.Frequency(note.midi, 'midi').toFrequency();
+      this.synth.triggerAttackRelease(frequency, duration, when, note.velocity || 0.7);
+    });
+
+    const lastEndBeat = Math.max(...melodyNotes.map(note =>
+      note.beat - firstBeat + (note.durationBeats || 0.25)
+    ));
+    const endTimerId = setTimeout(() => {
+      this.isPlaying = false;
+    }, (lastEndBeat * secondsPerBeat + 0.2) * 1000);
+    this.scheduledEvents.push(endTimerId);
+  }
+
   /**
    * Play full progression with playhead tracking.
    * Audio is scheduled on the Web Audio hardware timeline. This avoids timer jitter

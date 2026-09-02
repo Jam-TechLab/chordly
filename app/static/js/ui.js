@@ -233,7 +233,19 @@ class UIManager {
         block.className = 'chord-block';
         block.dataset.sectionIdx = sIdx;
         block.dataset.chordIdx = cIdx;
-        block.innerHTML = `<span class="chord-symbol">${chordEngine.formatChordForDisplay(chord)}</span>`;
+        const insight = section.harmonyInsights?.[cIdx];
+        const fitBadge = insight
+          ? `<span class="melody-fit-badge">旋律 ${Math.round(insight.melodyFit * 100)}%</span>`
+          : '';
+        block.innerHTML = `<span class="chord-symbol">${chordEngine.formatChordForDisplay(chord)}</span>${fitBadge}`;
+        if (insight) {
+          block.title = [
+            `旋律適合 ${Math.round(insight.melodyFit * 100)}%`,
+            `声部移動 ${Math.round(insight.voiceLeading * 100)}%`,
+            `調内性 ${Math.round(insight.theoryFit * 100)}%`,
+            insight.changedFromTemplate ? 'テンプレートから再選択' : 'テンプレートを維持'
+          ].join(' / ');
+        }
         trackDiv.appendChild(block);
       });
 
@@ -316,8 +328,11 @@ class UIManager {
       card.dataset.chordIdx = cIdx;
 
       // Score display
-      const scoreLabel = item.score >= 0.8 ? '◉ スムーズ' :
-                         item.score >= 0.6 ? '◎ 自然' : '○ やや跳躍';
+      const connectionLabel = item.score >= 0.8 ? '◉ スムーズ' :
+                              item.score >= 0.6 ? '◎ 自然' : '○ やや跳躍';
+      const scoreLabel = item.melodyFit === null
+        ? connectionLabel
+        : `旋律 ${Math.round(item.melodyFit * 100)}% · ${connectionLabel}`;
 
       card.innerHTML = `
         <span class="suggestion-chord">${chordEngine.formatChordForDisplay(item.symbol)}</span>

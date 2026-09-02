@@ -266,10 +266,10 @@ class ChordEngine {
     const rootPc = this.noteMap[parsed.root];
     if (rootPc === undefined) return [48, 60, 64, 67];
 
-    const rawIntervals = this.chordTypes[parsed.type] || this.chordTypes[''];
-
     // 1. Extract unique pitch classes (0-11) for all chord tones
-    const pitchClasses = Array.from(new Set(rawIntervals.map(iv => (rootPc + iv) % 12)));
+    // Tonal.js understands a wider range of symbols; the local table remains
+    // as an offline-safe fallback.
+    const pitchClasses = Array.from(new Set(this.getChordPitchClasses(symbol)));
 
     // 2. Clamp all upper notes into the fixed absolute 1-octave window [60..71] (C4 to B4)
     const upperWindowBase = 60; // C4
@@ -288,6 +288,16 @@ class ChordEngine {
 
   /** Get pitch classes (0-11) for a chord */
   getChordPitchClasses(symbol) {
+    if (typeof Tonal !== 'undefined' && Tonal.Chord && Tonal.Note) {
+      const tonalChord = Tonal.Chord.get(symbol);
+      if (tonalChord && tonalChord.notes && tonalChord.notes.length) {
+        const tonalPcs = tonalChord.notes
+          .map(noteName => Tonal.Note.chroma(noteName))
+          .filter(pc => Number.isInteger(pc));
+        if (tonalPcs.length) return Array.from(new Set(tonalPcs));
+      }
+    }
+
     const parsed = this.parseChord(symbol);
     if (!parsed) return [0, 4, 7];
     const rootPc = this.noteMap[parsed.root] || 0;
@@ -327,6 +337,188 @@ class ChordEngine {
       const noteName = this.pcToNote[(base + t.offset) % 12];
       return noteName + t.type;
     });
+  }
+
+  // ==========================================
+  // Melody-aware harmony ranking
+  // ==========================================
+
+  /** Pitch classes in the selected key. Uses Tonal.js when available. */
+  getScalePitchClasses(key, mode) {
+    if (typeof Tonal !== 'undefined' && Tonal.Scale && Tonal.Note) {
+      const scale = Tonal.Scale.get(`${key} ${mode}`);
+      if (scale && scale.notes && scale.notes.length) {
+        return scale.notes
+          .map(noteName => Tonal.Note.chroma(noteName))
+          .filter(pc => Number.isInteger(pc));
+      }
+    }
+
+    const rootPc = this.noteMap[key] || 0;
+    const intervals = mode === 'minor'
+      ? [0, 2, 3, 5, 7, 8, 10]
+      : [0, 2, 4, 5, 7, 9, 11];
+    return intervals.map(interval => (rootPc + interval) % 12);
+  }
+
+  /** Candidate pool: template, diatonic chords, mixture, and secondary dominants. */
+  getHarmonyCandidates(baseChord, key, mode) {
+    const tonicPc = this.noteMap[key] || 0;
+    const diatonic = this.getDiatonicChords(key, mode);
+    const candidates = [baseChord, ...diatonic];
+
+    if (mode === 'major') {
+      candidates.push(
+        `${this.pcToNote[(tonicPc + 5) % 12]}m`,  // borrowed iv
+        this.pcToNote[(tonicPc + 8) % 12],        // borrowed bVI
+        this.pcToNote[(tonicPc + 10) % 12]        // borrowed bVII
+      );
+    } else {
+      candidates.push(
+        `${this.pcToNote[(tonicPc + 7) % 12]}7`,  // harmonic-minor V7
+        this.pcToNote[(tonicPc + 1) % 12]         // Neapolitan colour
+      );
+    }
+
+    // Dominants targeting the main diatonic destinations.
+    diatonic.slice(0, 6).forEach(target => {
+      const targetRoot = this.parseChord(target)?.root;
+      if (targetRoot && this.noteMap[targetRoot] !== undefined) {
+        candidates.push(`${this.pcToNote[(this.noteMap[targetRoot] + 7) % 12]}7`);
+      }
+    });
+
+    return Array.from(new Set(candidates)).filter(symbol => this.parseChord(symbol));
+  }
+
+  /** Melody/chord compatibility from 0 to 1, weighted by strong beats and velocity. */
+  melodyCompatibility(chordSymbol, melodyNotes, key, mode) {
+    if (!melodyNotes || melodyNotes.length === 0) return 0.5;
+
+    const chordPcs = new Set(this.getChordPitchClasses(chordSymbol));
+    const scalePcs = new Set(this.getScalePitchClasses(key, mode));
+    let scoreTotal = 0;
+    let weightTotal = 0;
+
+    melodyNotes.forEach(note => {
+      const pc = ((note.midi % 12) + 12) % 12;
+      const beatFraction = Math.abs(note.beat - Math.round(note.beat));
+      const strongBeatWeight = beatFraction < 0.08 ? 1.35 : 1;
+      const weight = strongBeatWeight * Math.max(0.35, note.velocity || 0.7);
+
+      let fit = 0.15;
+      if (chordPcs.has(pc)) {
+        fit = 1;
+      } else if (scalePcs.has(pc)) {
+        fit = 0.48;
+      } else {
+        const nearest = Math.min(...Array.from(chordPcs).map(chordPc => {
+          const distance = Math.abs(chordPc - pc);
+          return Math.min(distance, 12 - distance);
+        }));
+        fit = nearest === 1 ? 0.08 : 0.25;
+      }
+
+      scoreTotal += fit * weight;
+      weightTotal += weight;
+    });
+
+    return weightTotal ? scoreTotal / weightTotal : 0.5;
+  }
+
+  /** Average nearest-note motion between upper chord voices, normalized to 0..1. */
+  voiceLeadingScore(fromChord, toChord) {
+    if (!fromChord) return 0.7;
+    const fromNotes = this.getChordMidi(fromChord).slice(1);
+    const toNotes = this.getChordMidi(toChord).slice(1);
+    if (!fromNotes.length || !toNotes.length) return 0.5;
+
+    const averageMotion = toNotes.reduce((sum, note) => {
+      const nearest = Math.min(...fromNotes.map(prev => Math.abs(prev - note)));
+      return sum + nearest;
+    }, 0) / toNotes.length;
+
+    return Math.max(0, 1 - Math.min(averageMotion, 6) / 6);
+  }
+
+  chordTension(chordSymbol) {
+    const type = this.parseChord(chordSymbol)?.type || '';
+    if (type.includes('dim') || type.includes('b5')) return 0.95;
+    if (type.includes('9') || type === '7') return 0.78;
+    if (type.includes('maj7') || type.includes('m7')) return 0.62;
+    if (type.includes('sus') || type.includes('aug')) return 0.58;
+    if (type === 'm') return 0.42;
+    return 0.28;
+  }
+
+  moodTensionTarget(mood) {
+    const targets = {
+      jazzy: 0.72, bright: 0.32, dark: 0.78, beautiful: 0.48,
+      setsunai: 0.62, powerful: 0.52, calm: 0.28, emotional: 0.66,
+      pop: 0.38, cinematic: 0.74
+    };
+    return targets[mood] ?? 0.5;
+  }
+
+  /**
+   * Re-rank generated chords against an imported melody without requiring a
+   * training database. Returns both the chosen chords and explainable scores.
+   */
+  harmonizeWithMelody(baseProgression, melodyNotes, sectionStartBeat,
+                       beatsPerChord, key, mode, mood) {
+    if (!melodyNotes || melodyNotes.length === 0) {
+      return { chords: [...baseProgression], insights: [] };
+    }
+
+    const diatonic = new Set(this.getDiatonicChords(key, mode));
+    const targetTension = this.moodTensionTarget(mood);
+    const chords = [];
+    const insights = [];
+    let previousChord = null;
+
+    baseProgression.forEach((baseChord, index) => {
+      const slotStart = sectionStartBeat + index * beatsPerChord;
+      const slotEnd = slotStart + beatsPerChord;
+      const slotNotes = melodyNotes.filter(note => {
+        const noteEnd = note.beat + Math.max(note.durationBeats || 0, 0.05);
+        return note.beat < slotEnd && noteEnd > slotStart;
+      });
+
+      if (!slotNotes.length) {
+        chords.push(baseChord);
+        insights.push(null);
+        previousChord = baseChord;
+        return;
+      }
+
+      const ranked = this.getHarmonyCandidates(baseChord, key, mode).map(candidate => {
+        const melodyFit = this.melodyCompatibility(candidate, slotNotes, key, mode);
+        const voiceLeading = this.voiceLeadingScore(previousChord, candidate);
+        const theoryFit = diatonic.has(candidate) ? 1 : 0.62;
+        const moodFit = 1 - Math.abs(this.chordTension(candidate) - targetTension);
+        const templateFit = candidate === baseChord ? 1 : 0.45;
+        const score = melodyFit * 0.52
+          + voiceLeading * 0.20
+          + theoryFit * 0.12
+          + moodFit * 0.08
+          + templateFit * 0.08;
+
+        return { candidate, score, melodyFit, voiceLeading, theoryFit, moodFit };
+      }).sort((a, b) => b.score - a.score);
+
+      const best = ranked[0];
+      chords.push(best.candidate);
+      insights.push({
+        melodyFit: best.melodyFit,
+        voiceLeading: best.voiceLeading,
+        theoryFit: best.theoryFit,
+        moodFit: best.moodFit,
+        changedFromTemplate: best.candidate !== baseChord
+      });
+      previousChord = best.candidate;
+    });
+
+    return { chords, insights };
   }
 
   /**
@@ -540,7 +732,7 @@ class ChordEngine {
   }
 
   /** Get suggestion candidates for a selected chord block for all 10 moods */
-  getSuggestions(currentChord, prevChord, nextChord, key, mode) {
+  getSuggestions(currentChord, prevChord, nextChord, key, mode, melodyNotes = []) {
     const root = this.parseChord(currentChord)?.root || 'C';
     const rootPc = this.noteMap[root] || 0;
     const diatonic = this.getDiatonicChords(key, mode);
@@ -601,11 +793,17 @@ class ChordEngine {
         if (nextChord) score = (score + this._connectionScore(symbol, nextChord)) / 2;
         if (!prevChord && !nextChord) score = 0.7;
 
+        const melodyFit = melodyNotes.length
+          ? this.melodyCompatibility(symbol, melodyNotes, key, mode)
+          : null;
+        if (melodyFit !== null) score = score * 0.45 + melodyFit * 0.55;
+
         if (score >= threshold) {
           result[cat].push({
             symbol,
             notes: this.getChordMidi(symbol),
-            score: Math.round(score * 100) / 100
+            score: Math.round(score * 100) / 100,
+            melodyFit: melodyFit === null ? null : Math.round(melodyFit * 100) / 100
           });
         }
       });
