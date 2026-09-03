@@ -170,13 +170,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const phraseLengthChords = Math.max(2, Math.round(chordsPerMeasure * 4));
 
     const nextSec = state.songData.sections[sIdx + 1];
-    let nextFirstChord = null;
-    if (nextSec) {
-      const nextKey = nextSec.key || sec.key;
-      const nextMode = nextSec.mode || sec.mode;
-      const nextDiatonic = chordEngine.getDiatonicChords(nextKey, nextMode);
-      nextFirstChord = nextDiatonic[0];
-    }
+    const nextFirstChord = nextSec?.chords?.[0] || null;
 
     sec.chords = chordEngine.generateProgression(
       sec.key, sec.mode, sec.type, sec.image, numChords,
@@ -580,6 +574,23 @@ function getMelodyNotesForChord(sectionIndex, chordIndex) {
   });
 }
 
+/** Generate from the end so every section can lead into the real next chord. */
+function generateSectionsInContext(songData) {
+  const beatsPerMeasure = songData.timeSignature[0];
+  const chordsPerMeasure = beatsPerMeasure / songData.chordDurationBeats;
+  const phraseLengthChords = Math.max(2, Math.round(chordsPerMeasure * 4));
+
+  for (let idx = songData.sections.length - 1; idx >= 0; idx--) {
+    const sec = songData.sections[idx];
+    const numChords = Math.round(sec.measures * chordsPerMeasure);
+    const nextFirstChord = songData.sections[idx + 1]?.chords?.[0] || null;
+    sec.chords = chordEngine.generateProgression(
+      sec.key, sec.mode, sec.type, sec.image, numChords,
+      nextFirstChord, phraseLengthChords
+    );
+  }
+}
+
 function generateAndRender() {
   const config = uiManager.getSongConfig();
 
@@ -603,26 +614,7 @@ function generateAndRender() {
     });
   }
 
-  config.sections.forEach((sec, idx) => {
-    const beatsPerMeasure = config.timeSignature[0];
-    const chordsPerMeasure = beatsPerMeasure / config.chordDurationBeats;
-    const numChords = Math.round(sec.measures * chordsPerMeasure);
-    const phraseLengthChords = Math.max(2, Math.round(chordsPerMeasure * 4));
-
-    const nextSec = config.sections[idx + 1];
-    let nextFirstChord = null;
-    if (nextSec) {
-      const nextKey = nextSec.key || sec.key;
-      const nextMode = nextSec.mode || sec.mode;
-      const nextDiatonic = chordEngine.getDiatonicChords(nextKey, nextMode);
-      nextFirstChord = nextDiatonic[0];
-    }
-
-    sec.chords = chordEngine.generateProgression(
-      sec.key, sec.mode, sec.type, sec.image, numChords,
-      nextFirstChord, phraseLengthChords
-    );
-  });
+  generateSectionsInContext(config);
 
   applyMelodyHarmony(config);
 
@@ -637,26 +629,7 @@ function generateAndRender() {
 }
 
 function regenerateChords() {
-  state.songData.sections.forEach((sec, idx) => {
-    const beatsPerMeasure = state.songData.timeSignature[0];
-    const chordsPerMeasure = beatsPerMeasure / state.songData.chordDurationBeats;
-    const numChords = Math.round(sec.measures * chordsPerMeasure);
-    const phraseLengthChords = Math.max(2, Math.round(chordsPerMeasure * 4));
-
-    const nextSec = state.songData.sections[idx + 1];
-    let nextFirstChord = null;
-    if (nextSec) {
-      const nextKey = nextSec.key || sec.key;
-      const nextMode = nextSec.mode || sec.mode;
-      const nextDiatonic = chordEngine.getDiatonicChords(nextKey, nextMode);
-      nextFirstChord = nextDiatonic[0];
-    }
-
-    sec.chords = chordEngine.generateProgression(
-      sec.key, sec.mode, sec.type, sec.image, numChords,
-      nextFirstChord, phraseLengthChords
-    );
-  });
+  generateSectionsInContext(state.songData);
   applyMelodyHarmony(state.songData);
   uiManager.renderEditor(state.songData);
   uiManager.hideSuggestionPanel();

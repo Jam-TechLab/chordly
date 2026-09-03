@@ -3,15 +3,31 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const priorSource = fs.readFileSync(
+  path.join(__dirname, '..', 'app', 'static', 'js', 'harmony-priors.js'),
+  'utf8'
+);
 const engineSource = fs.readFileSync(
   path.join(__dirname, '..', 'app', 'static', 'js', 'chord-engine.js'),
   'utf8'
 );
 const context = { console };
 vm.createContext(context);
+vm.runInContext(priorSource, context);
 vm.runInContext(`${engineSource}\nthis.ChordEngineUnderTest = ChordEngine;`, context);
 
 const engine = new context.ChordEngineUnderTest();
+
+assert.equal(context.CHORDLY_HARMONY_PRIORS.meta.songsRead, 1934);
+assert.equal(context.CHORDLY_HARMONY_PRIORS.meta.songsUsed, 1729);
+assert.ok(
+  engine.corpusTransitionScore(['V'], 'I', 'major')
+  > engine.corpusTransitionScore(['V'], 'bII', 'major')
+);
+assert.ok(
+  engine.corpusTransitionScore(['V'], 'i', 'minor')
+  > engine.corpusTransitionScore(['V'], 'bII', 'minor')
+);
 
 const original = ['G', 'F', 'G', 'C'];
 const withoutMelody = engine.harmonizeWithMelody(
@@ -129,6 +145,56 @@ for (const phraseLength of [4, 8, 16]) {
     });
   }
 }
+
+// Form is a hard constraint, not a label pasted onto the same random loop.
+// B sections stay open on V; chorus/outro reserve tonic arrival for the end.
+for (const mode of ['major', 'minor']) {
+  const tonicToken = mode === 'major' ? 'I' : 'i';
+  for (let iteration = 0; iteration < 24; iteration++) {
+    const bridge = engine.generateProgression(
+      'C', mode, 'bridge', 'emotional', 8, null, 8
+    );
+    const bridgeTokens = bridge.map(chord => engine.chordToHarmonyToken(chord, 'C', mode));
+    assert.ok(['IV', 'ii', 'iv', 'ii°'].includes(bridgeTokens[0]));
+    assert.equal(bridgeTokens.at(-1), 'V');
+
+    for (const sectionType of ['chorus', 'outro']) {
+      const resolved = engine.generateProgression(
+        'C', mode, sectionType, 'pop', 8, null, 8
+      );
+      const tokens = resolved.map(chord => engine.chordToHarmonyToken(chord, 'C', mode));
+      assert.equal(tokens.at(-1), tonicToken);
+      resolved.forEach((chord, index) => {
+        if (index === 0) return;
+        assert.ok(!engine.hasSameChordRoot(resolved[index - 1], chord));
+        if (engine.isTonicArrival(resolved[index - 1], chord, 'C')) {
+          assert.equal(index, resolved.length - 1);
+        }
+      });
+    }
+  }
+}
+
+// Across a two-phrase section, the first phrase remains open and the next
+// phrase departs instead of resolving immediately after the boundary.
+for (let iteration = 0; iteration < 30; iteration++) {
+  const generated = engine.generateProgression(
+    'C', 'major', 'chorus', 'setsunai', 16, null, 8
+  );
+  assert.ok(!engine.isTonicArrival(generated[6], generated[7], 'C'));
+  assert.ok(!engine.isTonicArrival(generated[7], generated[8], 'C'));
+  assert.ok(engine.isTonicArrival(generated[14], generated[15], 'C'));
+}
+
+// Regeneration should explore several high-scoring paths without falling
+// back to arbitrary template concatenation.
+const variants = new Set();
+for (let iteration = 0; iteration < 40; iteration++) {
+  variants.add(engine.generateProgression(
+    'C', 'major', 'verse', 'pop', 8, null, 8
+  ).join(' '));
+}
+assert.ok(variants.size >= 3);
 
 const sectionLeadIn = engine.refineProgressionStructure(
   ['C', 'F', 'G', 'C'], 'C', 'major', 'bright', 'C', 8

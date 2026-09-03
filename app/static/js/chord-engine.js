@@ -683,10 +683,16 @@ class ChordEngine {
           const transition = this.harmonicTransitionScore(
             previous.candidate, candidate.candidate, key, mode
           );
+          const previousToken = this.chordToHarmonyToken(previous.candidate, key, mode);
+          const candidateToken = this.chordToHarmonyToken(candidate.candidate, key, mode);
+          const corpusFit = previousToken && candidateToken
+            ? this.corpusTransitionScore([previousToken], candidateToken, mode)
+            : 0.5;
           const repeatPenalty = previous.candidate === candidate.candidate ? 0.16 : 0;
           const total = paths[index - 1][previousIndex].total
             + candidate.unaryScore
             + transition * 0.28
+            + corpusFit * 0.14
             - repeatPenalty;
           if (total > bestTotal) {
             bestTotal = total;
@@ -727,126 +733,334 @@ class ChordEngine {
     return { chords, insights };
   }
 
+  /** Roman-numeral vocabulary shared by the corpus model and form planner. */
+  getHarmonyVocabulary(mode) {
+    return mode === 'minor'
+      ? ['i', 'ii°', 'bIII', 'iv', 'v', 'V', 'bVI', 'bVII', 'bII', 'IV', 'V/V', 'V/bIII', 'V/iv', 'V/bVI']
+      : ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°', 'bVII', 'iv', 'bVI', 'bII', 'V/ii', 'V/IV', 'V/V', 'V/vi'];
+  }
+
+  /** Convert a normalized harmony token to a chord symbol in the requested key. */
+  harmonyTokenToChord(token, key, mode) {
+    const tonic = this.noteMap[key] ?? 0;
+    const specs = mode === 'minor'
+      ? {
+          i: [0, 'm'], 'ii°': [2, 'dim'], bIII: [3, ''], iv: [5, 'm'],
+          v: [7, 'm'], V: [7, ''], bVI: [8, ''], bVII: [10, ''],
+          bII: [1, ''], IV: [5, ''], 'V/V': [2, '7'], 'V/bIII': [10, '7'],
+          'V/iv': [0, '7'], 'V/bVI': [3, '7']
+        }
+      : {
+          I: [0, ''], ii: [2, 'm'], iii: [4, 'm'], IV: [5, ''],
+          V: [7, ''], vi: [9, 'm'], 'vii°': [11, 'dim'], bVII: [10, ''],
+          iv: [5, 'm'], bVI: [8, ''], bII: [1, ''], 'V/ii': [9, '7'],
+          'V/IV': [0, '7'], 'V/V': [2, '7'], 'V/vi': [4, '7']
+        };
+    const spec = specs[token];
+    if (!spec) return null;
+    const pitchClass = (tonic + spec[0]) % 12;
+    const flatNames = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+    const sharpNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const preferFlats = token.startsWith('b') || token.includes('/b')
+      || ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'].includes(key);
+    return `${preferFlats ? flatNames[pitchClass] : sharpNames[pitchClass]}${spec[1]}`;
+  }
+
+  /** Normalize a concrete chord back to the corpus token vocabulary. */
+  chordToHarmonyToken(chordSymbol, key, mode) {
+    const parsed = this.parseChord(chordSymbol);
+    if (!parsed || this.noteMap[parsed.root] === undefined) return null;
+    const tonic = this.noteMap[key] ?? 0;
+    const degree = (this.noteMap[parsed.root] - tonic + 12) % 12;
+    const type = parsed.type.toLowerCase();
+    const diminished = type.includes('dim') || type.includes('b5');
+    const minor = (type.startsWith('m') && !type.startsWith('maj')) || diminished;
+    const dominant = type === '7' || /^9|^11|^13/.test(type);
+
+    if (mode === 'minor') {
+      const simple = { 0: 'i', 1: 'bII', 3: 'bIII', 6: 'bV', 7: minor ? 'v' : 'V', 8: 'bVI', 9: 'vi', 10: 'bVII', 11: 'vii°' };
+      if (degree === 2) return diminished ? 'ii°' : minor ? 'ii' : 'V/V';
+      if (degree === 4) return dominant ? 'V/bVI' : 'iii';
+      if (degree === 5) return minor ? 'iv' : 'IV';
+      return simple[degree] || null;
+    }
+
+    const simple = { 0: 'I', 1: 'bII', 3: 'bIII', 6: 'bV', 7: minor ? 'v' : 'V', 8: 'bVI', 10: 'bVII', 11: 'vii°' };
+    if (degree === 2) return diminished ? 'ii°' : minor ? 'ii' : 'V/V';
+    if (degree === 4) return minor ? 'iii' : 'V/vi';
+    if (degree === 5) return minor ? 'iv' : 'IV';
+    if (degree === 9) return minor ? 'vi' : 'V/ii';
+    return simple[degree] || null;
+  }
+
+  harmonyTokenFunction(token, mode) {
+    const tonic = mode === 'minor' ? ['i', 'bIII', 'bVI', 'vi'] : ['I', 'iii', 'vi'];
+    const predominant = mode === 'minor'
+      ? ['ii°', 'ii', 'iv', 'IV', 'bII']
+      : ['ii', 'IV', 'iv', 'bVI', 'bII'];
+    if (tonic.includes(token)) return 'tonic';
+    if (predominant.includes(token)) return 'predominant';
+    if (token === 'V' || token === 'v' || token === 'vii°' || token.startsWith('V/')) return 'dominant';
+    return 'chromatic';
+  }
+
+  /** Corpus likelihood with trigram→bigram→unigram backoff. */
+  corpusTransitionScore(history, candidate, mode) {
+    const embedded = typeof globalThis !== 'undefined' ? globalThis.CHORDLY_HARMONY_PRIORS : null;
+    const fallback = mode === 'minor'
+      ? {
+          unigrams: { i: 0.24, bVII: 0.15, bVI: 0.13, V: 0.12, v: 0.09, bIII: 0.09, iv: 0.07 },
+          bigrams: {
+            i: { bVI: 0.22, bVII: 0.19, iv: 0.16, V: 0.15, bIII: 0.12 },
+            iv: { V: 0.36, i: 0.23, bVII: 0.14 },
+            V: { i: 0.58, bVI: 0.11, bVII: 0.1 },
+            bVI: { bVII: 0.3, iv: 0.2, V: 0.16 },
+            bVII: { i: 0.3, bVI: 0.18, bIII: 0.17 }
+          },
+          trigrams: {}
+        }
+      : {
+          unigrams: { I: 0.27, V: 0.25, IV: 0.18, vi: 0.08, ii: 0.06, iii: 0.04 },
+          bigrams: {
+            I: { V: 0.4, IV: 0.26, vi: 0.11, ii: 0.07 },
+            ii: { V: 0.56, IV: 0.12, vi: 0.1 },
+            IV: { V: 0.4, I: 0.26, ii: 0.1 },
+            V: { I: 0.54, IV: 0.22, vi: 0.1 },
+            vi: { IV: 0.31, ii: 0.2, V: 0.14, iii: 0.1 }
+          },
+          trigrams: {}
+        };
+    const prior = embedded?.[mode] || fallback;
+    const previous = history.at(-1);
+    const trigramContext = history.slice(-2).join('>');
+    const trigram = prior.trigrams?.[trigramContext]?.[candidate];
+    const bigram = previous ? prior.bigrams?.[previous]?.[candidate] : null;
+    const unigram = prior.unigrams?.[candidate] || 0.004;
+    const probability = trigram != null
+      ? trigram * 0.66 + (bigram || unigram) * 0.24 + unigram * 0.1
+      : bigram != null
+        ? bigram * 0.82 + unigram * 0.18
+        : unigram * 0.35;
+    return Math.max(0.04, Math.min(1, 0.06 + Math.sqrt(probability) * 1.16));
+  }
+
+  getSectionHarmonyProfile(sectionType, mode) {
+    const type = sectionType === 'verse2' ? 'verse' : sectionType;
+    const profiles = mode === 'minor'
+      ? {
+          intro: { starts: ['i', 'bVI'], ends: ['V', 'bVII'], preFinal: ['iv', 'bVI'], openCadence: ['V', 'bVI'], departures: ['bVI', 'iv', 'bIII'] },
+          verse: { starts: ['i', 'bIII', 'bVI'], ends: ['V', 'bVI'], preFinal: ['iv', 'bVI', 'ii°'], openCadence: ['V', 'bVI'], departures: ['bVI', 'iv', 'bIII'] },
+          bridge: { starts: ['iv', 'ii°'], ends: ['V'], preFinal: ['iv', 'bVI', 'ii°'], openCadence: ['V', 'bVI'], departures: ['bVI', 'iv', 'bIII'] },
+          chorus: { starts: ['i', 'bVI'], ends: ['i'], preFinal: ['V', 'iv'], openCadence: ['V', 'bVI'], departures: ['bVI', 'iv', 'bIII'] },
+          interlude: { starts: ['bVI', 'iv', 'i'], ends: ['V', 'bVII'], preFinal: ['iv', 'bVI'], openCadence: ['V', 'bVI'], departures: ['bVI', 'iv', 'bIII'] },
+          outro: { starts: ['bVI', 'iv', 'i'], ends: ['i'], preFinal: ['V', 'iv'], openCadence: ['V', 'bVI'], departures: ['bVI', 'iv', 'bIII'] }
+        }
+      : {
+          intro: { starts: ['I', 'IV'], ends: ['V', 'IV'], preFinal: ['ii', 'IV'], openCadence: ['V', 'vi'], departures: ['vi', 'IV', 'ii'] },
+          verse: { starts: ['I', 'vi'], ends: ['V', 'vi'], preFinal: ['ii', 'IV', 'V/vi'], openCadence: ['V', 'vi'], departures: ['vi', 'IV', 'ii'] },
+          bridge: { starts: ['IV', 'ii'], ends: ['V'], preFinal: ['ii', 'IV', 'V/V'], openCadence: ['V', 'vi'], departures: ['vi', 'IV', 'ii'] },
+          chorus: { starts: ['I', 'IV'], ends: ['I'], preFinal: ['V', 'IV'], openCadence: ['V', 'vi'], departures: ['vi', 'IV', 'ii'] },
+          interlude: { starts: ['vi', 'IV', 'I'], ends: ['V', 'IV'], preFinal: ['ii', 'IV'], openCadence: ['V', 'vi'], departures: ['vi', 'IV', 'ii'] },
+          outro: { starts: ['IV', 'vi', 'I'], ends: ['I'], preFinal: ['V', 'IV'], openCadence: ['V', 'vi'], departures: ['vi', 'IV', 'ii'] }
+        };
+    return profiles[type] || profiles.verse;
+  }
+
+  getProgressionGuides(mode, mood, sectionType) {
+    const major = {
+      bright: [['I', 'V', 'vi', 'IV'], ['I', 'IV', 'vi', 'V'], ['I', 'iii', 'IV', 'V']],
+      pop: [['I', 'V', 'vi', 'IV'], ['IV', 'V', 'iii', 'vi'], ['I', 'IV', 'V', 'IV']],
+      setsunai: [['IV', 'V', 'iii', 'vi'], ['vi', 'IV', 'I', 'V'], ['IV', 'V/vi', 'vi', 'V']],
+      emotional: [['IV', 'V', 'iii', 'vi'], ['vi', 'IV', 'V', 'I'], ['ii', 'V', 'iii', 'vi']],
+      jazzy: [['ii', 'V', 'I', 'vi'], ['iii', 'vi', 'ii', 'V'], ['IV', 'V/vi', 'vi', 'V/ii']],
+      beautiful: [['I', 'V', 'vi', 'iii', 'IV', 'I', 'ii', 'V'], ['I', 'iii', 'vi', 'IV']],
+      calm: [['I', 'IV', 'I', 'V'], ['I', 'iii', 'vi', 'IV'], ['IV', 'I', 'ii', 'V']],
+      powerful: [['I', 'V', 'vi', 'IV'], ['I', 'IV', 'V', 'IV'], ['vi', 'IV', 'V', 'I']],
+      dark: [['vi', 'IV', 'I', 'V'], ['vi', 'V', 'IV', 'V'], ['I', 'iv', 'bVI', 'V']],
+      cinematic: [['vi', 'IV', 'I', 'V'], ['I', 'bVI', 'IV', 'V'], ['IV', 'V', 'iii', 'vi']]
+    };
+    const minor = {
+      dark: [['i', 'bVI', 'bIII', 'bVII'], ['i', 'iv', 'bVI', 'V'], ['bVI', 'bVII', 'i', 'V']],
+      setsunai: [['bVI', 'iv', 'i', 'V'], ['i', 'bVI', 'bIII', 'bVII'], ['ii°', 'V', 'i', 'bVI']],
+      emotional: [['i', 'bVI', 'bIII', 'bVII'], ['bVI', 'iv', 'V', 'i'], ['iv', 'V', 'i', 'bVI']],
+      cinematic: [['i', 'iv', 'bVI', 'V'], ['bVI', 'bVII', 'i', 'V'], ['i', 'bII', 'bVI', 'V']],
+      jazzy: [['ii°', 'V', 'i', 'bVI'], ['iv', 'V', 'i', 'bVI'], ['bVI', 'V/bVI', 'bVI', 'V']],
+      bright: [['bIII', 'bVII', 'i', 'bVI'], ['i', 'bVI', 'bIII', 'bVII']],
+      pop: [['i', 'bVI', 'bIII', 'bVII'], ['bVI', 'bVII', 'i', 'V']],
+      beautiful: [['i', 'bVII', 'bVI', 'V'], ['bIII', 'bVII', 'i', 'bVI']],
+      calm: [['i', 'iv', 'bVI', 'bVII'], ['bIII', 'bVII', 'i', 'iv']],
+      powerful: [['i', 'bVI', 'bVII', 'i'], ['i', 'iv', 'V', 'i']]
+    };
+    const guides = (mode === 'minor' ? minor[mood] : major[mood])
+      || (mode === 'minor' ? minor.dark : major.pop);
+    if (sectionType === 'bridge') {
+      return mode === 'minor'
+        ? [['iv', 'bVI', 'ii°', 'V'], ...guides]
+        : [['IV', 'V', 'iii', 'vi', 'ii', 'V/V', 'V', 'V'], ...guides];
+    }
+    if (sectionType === 'outro') {
+      return mode === 'minor'
+        ? [['bVI', 'iv', 'V', 'i'], ...guides]
+        : [['vi', 'IV', 'V', 'I'], ['IV', 'I', 'IV', 'I'], ...guides];
+    }
+    return guides;
+  }
+
+  moodHarmonyScore(token, mood, mode) {
+    const favored = {
+      jazzy: ['ii', 'ii°', 'V', 'iii', 'vi', 'V/ii', 'V/vi', 'V/bVI'],
+      bright: mode === 'minor' ? ['bIII', 'bVII', 'bVI'] : ['I', 'IV', 'V', 'vi'],
+      dark: mode === 'minor' ? ['i', 'iv', 'bVI', 'bVII', 'V'] : ['vi', 'iv', 'bVI', 'V'],
+      beautiful: mode === 'minor' ? ['bIII', 'bVI', 'iv'] : ['I', 'iii', 'IV', 'vi'],
+      setsunai: mode === 'minor' ? ['bVI', 'iv', 'V', 'i'] : ['IV', 'iii', 'vi', 'V/vi'],
+      powerful: ['I', 'i', 'IV', 'iv', 'V', 'bVI', 'bVII'],
+      calm: mode === 'minor' ? ['i', 'iv', 'bIII'] : ['I', 'IV', 'ii', 'vi'],
+      emotional: mode === 'minor' ? ['i', 'bVI', 'iv', 'V'] : ['IV', 'iii', 'vi', 'V'],
+      pop: mode === 'minor' ? ['i', 'bVI', 'bIII', 'bVII'] : ['I', 'V', 'vi', 'IV'],
+      cinematic: mode === 'minor' ? ['i', 'bII', 'bVI', 'V'] : ['vi', 'bVI', 'iv', 'V']
+    };
+    return favored[mood]?.includes(token) ? 1 : 0.46;
+  }
+
+  candidateTokensForPosition(index, length, phraseLength, profile, mode) {
+    if (length === 1) return profile.ends;
+    if (index === length - 1) return profile.ends;
+    if (index === length - 2) return profile.preFinal;
+    if (index === 0) return profile.starts;
+    if ((index + 1) % phraseLength === 0) return profile.openCadence;
+    if (index > 0 && index % phraseLength === 0) return profile.departures;
+    return this.getHarmonyVocabulary(mode);
+  }
+
+  scoreHarmonyCandidate(tokens, candidate, index, length, guide, key, mode, mood) {
+    const history = tokens.slice(-2);
+    const candidateChord = this.harmonyTokenToChord(candidate, key, mode);
+    const previousToken = tokens.at(-1);
+    const previousChord = previousToken ? this.harmonyTokenToChord(previousToken, key, mode) : null;
+    const guideToken = guide[index % guide.length];
+    const corpus = this.corpusTransitionScore(history, candidate, mode);
+    const guideFit = candidate === guideToken
+      ? 1
+      : this.harmonyTokenFunction(candidate, mode) === this.harmonyTokenFunction(guideToken, mode) ? 0.48 : 0;
+    const transition = previousChord
+      ? this.harmonicTransitionScore(previousChord, candidateChord, key, mode)
+      : 0.72;
+    const moodFit = this.moodHarmonyScore(candidate, mood, mode);
+    let score = corpus * 2.35 + guideFit * 1.7 + transition * 1.15 + moodFit * 0.7;
+
+    const diatonicTokens = mode === 'minor'
+      ? ['i', 'ii°', 'bIII', 'iv', 'v', 'V', 'bVI', 'bVII']
+      : ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°'];
+    const isChromatic = !diatonicTokens.includes(candidate);
+    if (isChromatic && moodFit < 1) score -= 0.85;
+
+    if (previousToken === candidate) score -= 8;
+    if (tokens.length >= 2 && tokens.at(-2) === candidate) score -= 0.38;
+    if (previousChord && candidateChord && this.hasSameChordRoot(previousChord, candidateChord)) score -= 5;
+
+    const isFinal = index === length - 1;
+    if (!isFinal && previousChord && candidateChord && this.isTonicArrival(previousChord, candidateChord, key)) {
+      score -= 5.5;
+    }
+    if (tokens.length >= 3) {
+      const recent = tokens.slice(-3);
+      for (let i = 1; i < recent.length; i++) {
+        const from = this.harmonyTokenToChord(recent[i - 1], key, mode);
+        const to = this.harmonyTokenToChord(recent[i], key, mode);
+        if (this.isTonicArrival(from, to, key)) score -= 2.5;
+      }
+    }
+
+    const chromaticCount = [...tokens, candidate]
+      .filter(token => !diatonicTokens.includes(token)).length;
+    const chromaticBudget = ['jazzy', 'cinematic', 'setsunai', 'emotional'].includes(mood)
+      ? Math.max(2, Math.ceil(length / 4))
+      : Math.max(1, Math.ceil(length / 7));
+    if (chromaticCount > chromaticBudget) score -= (chromaticCount - chromaticBudget) * 1.15;
+
+    if (tokens.length >= 7) {
+      const newFour = [...tokens.slice(-3), candidate].join('>');
+      const previousFour = tokens.slice(-7, -3).join('>');
+      if (newFour === previousFour) score -= 0.75;
+    }
+    return score;
+  }
+
+  decorateProgression(tokens, key, mode, mood) {
+    return tokens.map((token, index) => {
+      const chord = this.harmonyTokenToChord(token, key, mode);
+      const parsed = this.parseChord(chord);
+      if (!parsed || index === tokens.length - 1 || parsed.type === '7') return chord;
+      const next = tokens[index + 1];
+      if (token === 'V' && (next === 'I' || next === 'i')) return `${parsed.root}7`;
+      if (mood === 'jazzy') {
+        if (parsed.type === '') return `${parsed.root}${token === 'V' ? '7' : 'maj7'}`;
+        if (parsed.type === 'm') return `${parsed.root}m7`;
+        if (parsed.type === 'dim') return `${parsed.root}m7b5`;
+      }
+      if (['beautiful', 'calm'].includes(mood) && index % 4 === 0) {
+        if (parsed.type === '') return `${parsed.root}${mood === 'beautiful' ? 'maj7' : 'add9'}`;
+        if (parsed.type === 'm') return `${parsed.root}m7`;
+      }
+      if (['setsunai', 'emotional', 'dark'].includes(mood) && index % 4 === 1 && parsed.type === 'm') {
+        return `${parsed.root}m7`;
+      }
+      if (['bright', 'pop'].includes(mood) && index === 0 && parsed.type === '') {
+        return `${parsed.root}add9`;
+      }
+      return chord;
+    });
+  }
+
   /**
-   * Generate a chord progression for a section using authentic masterpiece templates.
-   * If nextFirstChord is provided, resolves the last bar of the section to lead into it!
-   */
-  /**
-   * Generate a chord progression for a section using authentic masterpiece templates.
-   * Prioritizes Mood (imageType) to ensure distinctive progression signatures.
+   * Hierarchical generation: corpus likelihood proposes idiomatic motion,
+   * while section form and cadence rules control where the music can arrive.
    */
   generateProgression(
     key, mode, sectionType, imageType, numChords,
     nextFirstChord = null, phraseLengthChords = 8
   ) {
-    const d = this.getDiatonicChords(key, mode);
+    const length = Math.max(1, Math.round(numChords || 1));
+    const phraseLength = Math.max(2, Math.round(phraseLengthChords || 8));
+    const profile = this.getSectionHarmonyProfile(sectionType, mode);
+    const guides = this.getProgressionGuides(mode, imageType, sectionType);
+    const guide = guides[Math.floor(Math.random() * guides.length)];
+    let beam = [{ tokens: [], score: 0 }];
 
-    // Secondary dominant of vi (III7, e.g. E7 in C major for Just the Two of Us)
-    const dom3 = this.pcToNote[(this.noteMap[key] + 4) % 12] + '7';
-    // Secondary dominant of IV (I7)
-    const dom1 = d[0] + '7';
-
-    // Mood-driven masterpiece progression templates
-    const moodTemplatesMajor = {
-      bright: [
-        [d[0], d[4], d[5], d[3]],                 // 1-5-6-4 小悪魔
-        [d[0], d[3], d[0], d[4]],                 // 1-4-1-5 定番
-        [d[0], d[2], d[3], d[4]],                 // 1-3-4-5 カノンアプローチ
-      ],
-      setsunai: [
-        [d[3], d[4], d[2], d[5]],                 // IV-V-iii-vi (王道進行：Subdominant起点でエモい)
-        [d[3], dom3, d[5], dom1],                 // IV-III7-vi-I7 (丸サ進行：切なさ全開)
-        [d[5], d[3], d[0], d[4]],                 // vi-IV-I-V (Submediant起点の切ない進行)
-      ],
-      dark: [
-        [d[5], d[3], d[0], d[4]],                 // vi-IV-I-V (Submediant起点のダーク進行)
-        [d[0], d[3], d[5], d[4]],                 // 1-4-6-5
-        [d[5], d[4], d[3], d[4]],                 // 6-5-4-5
-      ],
-      jazzy: [
-        [d[1], d[4], d[0], d[5]],                 // ii-V-I-vi (2-5-1-6 進行)
-        [d[3], dom3, d[5], dom1],                 // IV-III7-vi-I7 (丸サ進行)
-        [d[2], d[5], d[1], d[4]],                 // iii-vi-ii-V
-      ],
-      beautiful: [
-        [d[0], d[4], d[5], d[2], d[3], d[0], d[3], d[4]], // カノン進行 (全節)
-        [d[3], d[4], d[2], d[5]],                         // 王道進行
-        [d[0], d[3], d[0], d[4]],                         // 1-4-1-5
-      ],
-      powerful: [
-        [d[0], d[4], d[5], d[3]],                         // 1-5-6-4
-        [d[5], d[3], d[4], d[0]],                         // 小室進行 (vi-IV-V-I)
-        [d[0], d[3], d[4], d[4]],                         // 1-4-5-5
-      ],
-      calm: [
-        [d[0], d[3], d[0], d[4]],                         // 1-4-1-5
-        [d[0], d[2], d[3], d[4]],                         // 1-3-4-5
-        [d[3], d[4], d[0], d[0]],                         // 4-5-1
-      ],
-      emotional: [
-        [d[3], d[4], d[2], d[5]],                         // 王道進行
-        [d[3], dom3, d[5], dom1],                         // 丸サ進行
-        [d[5], d[3], d[4], d[0]],                         // 小室進行
-      ],
-      pop: [
-        [d[0], d[4], d[5], d[3]],                         // 1-5-6-4
-        [d[3], d[4], d[2], d[5]],                         // 王道進行
-        [d[0], d[3], d[0], d[4]],                         // 1-4-1-5
-      ],
-      cinematic: [
-        [d[5], d[3], d[0], d[4]],                         // 6-4-1-5
-        [d[3], d[4], d[2], d[5]],                         // 王道進行
-        [d[0], d[4], d[5], d[2]],                         // カノン前半
-      ]
-    };
-
-    const moodTemplatesMinor = {
-      dark: [
-        [d[0], d[3], d[5], d[4]],                 // i-iv-VI-v
-        [d[0], d[5], d[3], d[4]],                 // i-VI-III-VII
-        [d[5], d[3], d[4], d[0]],                 // VI-iv-v-i
-      ],
-      setsunai: [
-        [d[5], d[3], d[0], d[4]],                 // VI-iv-i-V
-        [d[0], d[5], d[3], d[4]],                 // i-VI-III-VII
-        [d[1], d[4], d[0], d[5]],                 // ii°-V-i-VI
-      ],
-      jazzy: [
-        [d[1], d[4], d[0], d[5]],                 // ii°-V-i-VI
-        [d[3], d[4], d[0], d[5]],                 // iv-V-i-VI
-      ],
-      emotional: [
-        [d[0], d[5], d[3], d[4]],
-        [d[5], d[3], d[4], d[0]],
-      ],
-      cinematic: [
-        [d[0], d[3], d[5], d[4]],
-        [d[5], d[3], d[4], d[0]],
-      ]
-    };
-
-    // Priority 1: Mood-driven templates
-    const moodPool = mode === 'major'
-      ? (moodTemplatesMajor[imageType] || moodTemplatesMajor['bright'])
-      : (moodTemplatesMinor[imageType] || moodTemplatesMinor['dark'] || moodTemplatesMajor['bright']);
-
-    const pool = moodPool;
-
-    // Select base template
-    let prog = [...pool[Math.floor(Math.random() * pool.length)]];
-
-    // Extend to required number of chords
-    while (prog.length < numChords) {
-      const extra = [...pool[Math.floor(Math.random() * pool.length)]];
-      prog = prog.concat(extra);
+    for (let index = 0; index < length; index++) {
+      const candidates = this.candidateTokensForPosition(
+        index, length, phraseLength, profile, mode
+      );
+      const expanded = [];
+      beam.forEach(state => {
+        candidates.forEach(candidate => {
+          if (!this.harmonyTokenToChord(candidate, key, mode)) return;
+          const score = state.score + this.scoreHarmonyCandidate(
+            state.tokens, candidate, index, length, guide, key, mode, imageType
+          ) + Math.random() * 0.035;
+          expanded.push({ tokens: [...state.tokens, candidate], score });
+        });
+      });
+      expanded.sort((a, b) => b.score - a.score);
+      beam = expanded.slice(0, 48);
     }
-    prog = prog.slice(0, numChords);
 
-    // Apply image-based modifications
-    prog = prog.map(c => this._applyImage(c, imageType));
+    const finalists = beam.slice(0, Math.min(5, beam.length));
+    const bestScore = finalists[0]?.score || 0;
+    const weights = finalists.map(state => Math.exp((state.score - bestScore) * 0.78));
+    let draw = Math.random() * weights.reduce((sum, weight) => sum + weight, 0);
+    let chosen = finalists[0];
+    for (let index = 0; index < finalists.length; index++) {
+      draw -= weights[index];
+      if (draw <= 0) {
+        chosen = finalists[index];
+        break;
+      }
+    }
 
+    const progression = this.decorateProgression(chosen.tokens, key, mode, imageType);
     return this.refineProgressionStructure(
-      prog, key, mode, imageType, nextFirstChord, phraseLengthChords
+      progression, key, mode, imageType, nextFirstChord, phraseLength
     );
   }
 

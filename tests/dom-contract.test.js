@@ -17,4 +17,10 @@ const missingIds = Array.from(new Set(referencedIds))
   .filter(id => !html.includes(`id="${id}"`));
 
 assert.deepEqual(missingIds, [], `Missing DOM ids: ${missingIds.join(', ')}`);
+
+const priorScriptIndex = html.indexOf('/static/js/harmony-priors.js');
+const engineScriptIndex = html.indexOf('/static/js/chord-engine.js');
+assert.ok(priorScriptIndex >= 0, 'Harmony prior asset is not loaded');
+assert.ok(priorScriptIndex < engineScriptIndex, 'Harmony prior must load before the chord engine');
+assert.ok(appJs.includes('function generateSectionsInContext(songData)'));
 console.log('DOM contract test passed');

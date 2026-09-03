@@ -1,7 +1,8 @@
-const CACHE_NAME = 'chordly-v6';
+const CACHE_NAME = 'chordly-v7';
 const ASSETS_TO_CACHE = [
   '/',
   '/static/css/style.css',
+  '/static/js/harmony-priors.js',
   '/static/js/chord-engine.js',
   '/static/js/audio.js',
   '/static/js/ui.js',
